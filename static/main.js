@@ -1,7 +1,7 @@
-import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
+import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table,dots} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",layouts:[],layoutActive:null,layoutPosition:0};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -10,8 +10,11 @@ const nav=[
   ["received","Received evidence","archive"],
 ];
 const tabs=[
-  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
+  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["geometry","Geometry","frame"],["layout","Die layout","die"],["evidence","Evidence","archive"],
 ];
+const POSITIONS=[-1,0,1];
+const posName=p=>({-1:"Left",0:"Center",1:"Right"})[Number(p)];
+const TRACE_STATES={product:["On product","#6fc498"],window:["Into window","#f68b60"],waste:["Outer waste","#ee6244"],unphotographed:["Not photographed","#b0b0b0"]};
 const tileUrl=()=>`/api/specimens/${state.tile.id}`;
 const tileData=extra=>({version:state.tile.version,...extra});
 let toastTimer;
@@ -20,8 +23,10 @@ let travel=0;
 let dialogToken=0;
 let drawPoints=[];
 let drawLimit=0;
+let drawCommitted=[];
 let currentForm=null;
 let reviewUploads=[];
+let dieDraft=null;
 
 function toast(message, isError=false) {
   clearTimeout(toastTimer);
@@ -178,9 +183,27 @@ function geometryPage() {
       ? [["Trace length",`${n(metrics.trace_length)} ${metrics.length_unit}`],["Supported stations",percent(metrics.overall_support)]]
       : [["Marked area",`${n(metrics.vector_outline_area)} ${metrics.units}`],["Visible area",`${n(metrics.raster_supported_area)} ${metrics.units}`],["Outline",`${n(metrics.outline_length)} ${metrics.outline_unit}`]];
     const stations=record.mode==="trace"?metrics.segments:metrics.outline_segments;
+    let fold="";
+    if (metrics.millimeters) {
+      const die=metrics.die_layout;
+      const totals=metrics.state_totals_mm;
+      const rows=metrics.millimeters;
+      fold=`<h3>Fold line against the die</h3>
+      <div class="legend"><span>${e(die.name)} · ${e(die.position_label)} position${die.selected?"":" (no position chosen — center used)"} · ${e(die.side)} side</span>
+      <div class="swatches">${Object.values(TRACE_STATES).map(([label,color])=>dots(label,color)).join("")}</div></div>
+      <div class="metrics">${Object.entries(TRACE_STATES).map(([key,[label]])=>stat(label,`${n(totals[key],2)} mm`)).join("")}</div>
+      <p class="soft">Millimetre segments are numbered from the start of the stroke; the same numbers are printed along the line on the map. Location is the segment start on the registered plane.</p>
+      ${table(["mm","From–to","State","Product","Window","Waste","Not photographed","Location"],rows.slice(0,400).map(item=>[
+        item.index,`${n(item.from_mm,1)}–${n(item.to_mm,1)}`,TRACE_STATES[item.state][0],
+        n(item.states.product,2),n(item.states.window,2),n(item.states.waste,2),n(item.states.unphotographed,2),
+        `${n(item.start_xy[0]*100,1)}% · ${n(item.start_xy[1]*100,1)}%`,
+      ]))}
+      ${rows.length>400?`<p class="soft">First 400 of ${rows.length} segments shown.</p>`:""}`;
+    }
     report=`<section class="card stack"><h3>${e(record.title)}</h3>
       <figure class="stage">${img(base+"/overlay.png",record.title)}</figure>
       <div class="metrics">${stats.map(([name,value])=>stat(name,value)).join("")}</div>
+      ${fold}
       ${table(["Segment","Length","Heading"],stations.map(item=>[item.index,`${n(item.length)} ${item.units}`,n(item.clockwise_heading)+"°"]))}
       <div class="actions">${link("Measurement JSON",base+"/data.json","secondary","download")}</div></section>`;
   }
@@ -188,6 +211,43 @@ function geometryPage() {
       <p class="soft">Trace along the image or measure visible support inside a saved sampling region.</p>
       <div class="actions">${btn("Trace a path","trace-add","primary","measure")}${btn("Measure region area","area-add","secondary","frame")}</div></section>
       <section class="card"><h3>Saved geometry</h3><div class="divider-list">${results.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(item.mode)} · revision ${item.specimen.version}</small></div>${btn("Open","metrology-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No saved outlines.</p>"}</div></section></div></div>`;
+}
+
+function layoutPage() {
+  const record=state.layoutActive;
+  const items=state.layouts||[];
+  let view=empty("Mount the die once: draw its outer contour and window on the front plane, then compare the three press positions against the printed strokes on both sides.",btn("New die layout","layout-add","primary","plus"));
+  if (record) {
+    const ev=record.evaluation;
+    const pos=state.layoutPosition;
+    const front=ev.sides.front, back=ev.sides.back;
+    const chosen=ev.sides.front.per_position[String(ev.recommended)];
+    const rowFor=p=>{
+      const f=front.per_position[String(p)], b=back.per_position[String(p)];
+      return [`${posName(p)}${p===ev.recommended?" ★":""}`,percent(f.kept_percent),`${f.broken_components} / ${f.component_count}`,
+        `${b.broken_components} / ${b.component_count}`,percent(b.lost_percent),percent(front.review_percent),percent(back.review_percent)];
+    };
+    view=`<section class="card stack">
+      <div class="title-row"><div><h3>${e(record.name)}</h3><small>Sheet ${record.sheet_mm.map(value=>n(value,1)).join(" × ")} mm · step ${n(record.step_mm,2)} mm · ${e(record.flip)} flip · back: ${e(back.tile_name)}</small></div>
+      ${record.selected==null?badge("No position chosen","caution"):badge(`Position: ${posName(record.selected)}`,"ready")}</div>
+      <p class="notice">Recommended: <strong>${posName(ev.recommended)}</strong> — keeps ${percent(chosen.kept_percent)} of the front strokes and cuts ${ev.sides.back.per_position[String(ev.recommended)].broken_components} barcode bar(s). Teal ink stays on the product; red ink falls into the window or the outer waste. Hatched paper was not photographed — review it on the proof.</p>
+      <div class="actions">${POSITIONS.map(p=>btn(posName(p),"layout-pos",pos===p?"tiny primary":"tiny secondary",null,`data-value="${p}"`)).join("")}
+      ${btn(`Use ${posName(pos)} on press`,"layout-select","tiny secondary","check",`data-value="${pos}"`)}</div>
+      <div class="stage-pair">
+        <figure class="stage">${img(`/api/layouts/${record.id}/overlay/front/${pos}`,"Front side with the die at the shown position")}<figcaption class="stage-foot">Front · fine text by the window</figcaption></figure>
+        <figure class="stage">${img(`/api/layouts/${record.id}/overlay/back/${pos}`,"Back side with the die at the shown position")}<figcaption class="stage-foot">Back · barcode by the outer edge</figcaption></figure>
+      </div>
+      ${table(["Position","Front strokes kept","Front strokes broken","Back bars cut","Back ink lost","Front unphotographed","Back unphotographed"],POSITIONS.map(rowFor))}
+      ${front.uncertain_components+back.uncertain_components?`<p class="notice warn">${front.uncertain_components+back.uncertain_components} stroke component(s) touch unphotographed paper and need your review.</p>`:""}
+      ${ev.notes.map(note=>`<p class="soft">${e(note)}</p>`).join("")}
+      <div class="actions">${link("Layout JSON",`/api/layouts/${record.id}/data.json`,"secondary","download")}</div></section>`;
+  }
+  return `<div class="grid-detail">${view}<div class="stack">
+    <section class="card"><div class="title-row"><h3>Die layouts</h3>${btn("New die layout","layout-add","tiny primary","plus")}</div>
+    <div class="divider-list">${items.map(item=>`<div class="row"><div class="grow"><strong class="row-title">${e(item.name)}</strong><small>${item.selected==null?"no position chosen":`position ${posName(item.selected)}`} · step ${n(item.step_mm,2)} mm</small></div>
+      ${btn("Open","layout-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No die layouts involve this specimen.</p>"}</div></section>
+    <section class="card"><h3>How it reads the sheet</h3><p class="soft">The die is drawn on the registered front plane in millimetres; the back side is mirrored by the flip direction used when the sheet was turned. All three positions shift the whole die — outer contour and window move together. The evaluation is a snapshot of the current photographs.</p></section>
+    </div></div>`;
 }
 
 function receivedPage() {
@@ -215,7 +275,7 @@ function tilePage() {
   <p>${e(descriptors.join(" · ") || "Registered press proof")}</p></div><div class="actions">${btn("Edit specimen","tile-edit","secondary","edit")}
   ${btn("Approve reference","reference-add","secondary","book")}</div></header>
   <nav class="tabs" aria-label="Specimen tools">${tabs.map(([key,label,glyph])=>`<button type="button" class="tab ${state.tab===key?"active":""}" data-do="tile-tab" data-value="${key}">${icon(glyph)}${e(label)}</button>`).join("")}</nav>
-  ${{captures,regions:regionPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
+  ${{captures,regions:regionPage,measure:measurements,geometry:geometryPage,layout:layoutPage,evidence:evidencePage}[state.tab]()}`;
 }
 
 function libraryPage() {
@@ -250,14 +310,15 @@ function render() {
 
 async function gatherTile(token=travel) {
   const url=tileUrl();
-  const [results,packets,activity,refs,metrology]=await Promise.all([
-    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),
+  const [results,packets,activity,refs,metrology,layouts]=await Promise.all([
+    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),api(url+"/layouts"),
   ]);
   if (token!==travel) return;
   state.results=results.items;
   state.packets=packets.items;
   state.activity=activity.items;
   state.metrology=metrology.items;
+  state.layouts=layouts.items;
   state.refs=refs.items;
 }
 
@@ -270,7 +331,7 @@ async function route() {
     const tile=await api(`/api/specimens/${id}`);
     if (token!==travel) return;
     if (state.tile?.id!==tile.id || state.page!=="tile") {
-      state.tab="captures"; state.capture=null; state.result=null;state.layer="overlay";state.viewer="raw";state.metrologyActive=null;
+      state.tab="captures"; state.capture=null; state.result=null;state.layer="overlay";state.viewer="raw";state.metrologyActive=null;state.layoutActive=null;
     }
     state.tile=tile;
     await gatherTile(token);
@@ -395,7 +456,8 @@ function drawUpdate() {
   if (!artist) return;
   const coords=drawPoints.map(([x,y])=>[x*1000,y*1000]);
   const edges=(drawLimit===2||coords.length<3)?"polyline":"polygon";
-  artist.innerHTML=`<${edges} class="draw-line" points="${coords.map(pair=>pair.join(",")).join(" ")}"></${edges}>
+  const committed=drawCommitted.map(set=>`<polygon class="draw-line ${set.window?"committed-window":"committed"}" points="${set.points.map(([x,y])=>`${x*1000},${y*1000}`).join(" ")}"></polygon>`).join("");
+  artist.innerHTML=`${committed}<${edges} class="draw-line" points="${coords.map(pair=>pair.join(",")).join(" ")}"></${edges}>
     ${coords.map(([x,y],index)=>`<circle class="draw-point" cx="${x}" cy="${y}" r="10"/><text class="draw-label" x="${x+16}" y="${y+16}">${index+1}</text>`).join("")}`;
   const label=q("#draw-count");
   if (label) label.textContent=`${drawPoints.length} of ${drawLimit} points marked`;
@@ -404,6 +466,7 @@ function drawUpdate() {
 function prepareDrawing(chosen, limit) {
   drawPoints=chosen.map(value=>[...value]);
   drawLimit=limit;
+  drawCommitted=[];
   drawUpdate();
 }
 
@@ -519,13 +582,15 @@ function geometryMeasurementForm(mode) {
   const area=mode==="area";
   if (area&&!state.tile.regions.some(item=>item.purpose!=="ignore")) throw Error("Draw an inspection region before measuring its area.");
   const title=area?"Measure region area":"Trace a path";
+  const layouts=state.layouts||[];
   const content=area?selectField("Region","region_id",regions(null,false)):`
     <p class="notice">Click along the shape you want to trace. The line reports measured lengths along the registered surface.</p>
+    ${layouts.length?selectField("Die layout for fold-line classification","layout_id",option("","No die classification","")+layouts.map(item=>option(item.id,item.name+(item.selected==null?"":" · "+posName(item.selected)))).join("")):""}
     ${drawing(base.registered_url,"Specimen outline for tracing")}
     <div class="actions">${btn("Clear points","draw-clear","tiny secondary")}${btn("Undo point","draw-undo","tiny ghost")}<span class="soft" id="draw-count"></span></div>`;
   modal(title,textField("Measurement title","title",area?"Region area":"Surface trace",'required maxlength="90"')+content,
     "Save geometry",async data=>{
-      const payload={title:data.get("title"),mode,region_id:data.get("region_id"),points:drawPoints};
+      const payload={title:data.get("title"),mode,region_id:data.get("region_id"),points:drawPoints,layout_id:data.get("layout_id")||null};
       state.metrologyActive=await api(tileUrl()+"/metrology",{method:"POST",body:payload});
       await gatherTile();
       commitModal();
@@ -533,6 +598,57 @@ function geometryMeasurementForm(mode) {
       render();
     },!area);
   if (!area) prepareDrawing([],45);
+}
+
+function diePhaseLabel() {
+  const label=q("#die-phase");
+  if (!label||!dieDraft) return;
+  label.textContent=dieDraft.phase==="outer"
+    ?"Step 1 · Click around the outer cutting contour (3+ points), then Commit outer."
+    :`Step 2 · Click around window ${dieDraft.windows.length+1} (3+ points), then Commit window. Commit at least one window before evaluating.`;
+}
+
+async function layoutForm() {
+  const base=state.tile.photos.find(item=>item.registration_state==="base");
+  if (!base) throw Error("Register the front plane before drawing the die.");
+  if (!state.tile.width_mm||!state.tile.height_mm) throw Error("Enter the sheet dimensions (mm) for this specimen first.");
+  const others=(await api("/api/specimens")).items.filter(item=>item.id!==state.tile.id&&item.width_mm&&item.height_mm);
+  if (!others.length) throw Error("Create the back-side specimen with its sheet dimensions first.");
+  dieDraft={outer:[],windows:[],phase:"outer"};
+  const frontRegions=state.tile.regions.filter(item=>item.purpose!=="ignore");
+  modal("New die layout",`
+    ${textField("Layout name","name",state.tile.name+" die",'required maxlength="90"')}
+    <div class="form-columns">
+    ${selectField("Back-side specimen","back_tile_id",others.map(item=>option(item.id,`${item.name} · ${item.width_mm}×${item.height_mm} mm`)).join(""))}
+    ${selectField("Sheet flip between photos","flip",option("horizontal","Left-right turn (vertical axis)")+option("vertical","Top-bottom turn (horizontal axis)"))}
+    ${numField("Press shift step (mm)","step_mm",1,0.1,10,0.1)}
+    ${numField("Stroke contrast","contrast",0.16,0.05,0.6,0.01)}
+    ${selectField("Front text region","front_region_id",option("","Entire front plane","")+frontRegions.map(item=>option(item.id,item.name)).join(""))}
+    ${selectField("Back barcode region","back_region_id",option("","Entire back plane",""))}
+    </div>
+    <p class="notice" id="die-phase"></p>
+    ${drawing(base.registered_url,"Front plane for die drawing")}
+    <div class="actions">${btn("Commit outer","die-outer","tiny secondary")}${btn("Commit window","die-window","tiny secondary")}
+    ${btn("Clear points","draw-clear","tiny ghost")}${btn("Undo point","draw-undo","tiny ghost")}<span class="soft" id="draw-count"></span></div>`,
+    "Evaluate the three positions",async data=>{
+      if (dieDraft.outer.length<3) throw Error("Draw and commit the outer contour first.");
+      if (!dieDraft.windows.length) throw Error("Draw and commit at least one window.");
+      const record=await api(tileUrl()+"/layouts",{method:"POST",body:{
+        name:data.get("name"),back_tile_id:data.get("back_tile_id"),flip:data.get("flip"),
+        step_mm:Number(data.get("step_mm")),contrast:Number(data.get("contrast")),
+        front_region_id:data.get("front_region_id")||null,back_region_id:data.get("back_region_id")||null,
+        outer:dieDraft.outer,windows:dieDraft.windows,
+      }});
+      state.layoutActive=record;
+      state.layoutPosition=record.evaluation.recommended;
+      await gatherTile();
+      commitModal();
+      toast("Die layout evaluated.");
+      render();
+    },true);
+  prepareDrawing([],48);
+  diePhaseLabel();
+  q("#field-back_tile_id",dialog)?.dispatchEvent(new Event("change",{bubbles:true}));
 }
 
 function importEvidence() {
@@ -714,6 +830,37 @@ async function doAction(name,target) {
     "trace-add":()=>geometryMeasurementForm("trace"),
     "area-add":()=>geometryMeasurementForm("area"),
     "metrology-open":()=>{state.metrologyActive=state.metrology.find(item=>item.id===id);render();},
+    "layout-add":layoutForm,
+    "layout-open":()=>{
+      state.layoutActive=state.layouts.find(item=>item.id===id);
+      state.layoutPosition=state.layoutActive.selected??state.layoutActive.evaluation.recommended;
+      render();
+    },
+    "layout-pos":()=>{state.layoutPosition=Number(value);render();},
+    "layout-select":async ()=>{
+      const record=state.layoutActive;
+      state.layoutActive=await api(`/api/layouts/${record.id}/select`,{method:"POST",body:{version:record.version,position:Number(value)}});
+      await gatherTile();
+      toast(`Press position ${posName(state.layoutActive.selected)} saved; it now applies to both sides.`);
+      render();
+    },
+    "die-outer":()=>{
+      if (drawPoints.length<3) throw Error("Mark at least three points for the outer contour.");
+      dieDraft.outer=drawPoints.map(point=>[...point]);
+      drawPoints=[];
+      dieDraft.phase="window";
+      drawCommitted=[{points:dieDraft.outer},...dieDraft.windows.map(window=>({points:window,window:true}))];
+      drawUpdate();
+      diePhaseLabel();
+    },
+    "die-window":()=>{
+      if (drawPoints.length<3) throw Error("Mark at least three points for the window.");
+      dieDraft.windows.push(drawPoints.map(point=>[...point]));
+      drawPoints=[];
+      drawCommitted=[{points:dieDraft.outer},...dieDraft.windows.map(window=>({points:window,window:true}))];
+      drawUpdate();
+      diePhaseLabel();
+    },
     "receive-add":importEvidence,
     "received-open":()=>{state.receivedActive=state.received.find(item=>item.id===id);render();},
     "defect-note":()=>{
@@ -817,6 +964,12 @@ document.addEventListener("change",event=>{
     q("#field-kind")?.focus();
   }
   if (event.target.id==="field-study_kind") studyOptions(event.target.value);
+  if (event.target.id==="field-back_tile_id") {
+    api(`/api/specimens/${event.target.value}`).then(tile=>{
+      const select=q("#field-back_region_id");
+      if (select) select.innerHTML=option("","Entire back plane","")+tile.regions.filter(item=>item.purpose!=="ignore").map(item=>option(item.id,item.name)).join("");
+    }).catch(()=>{});
+  }
 });
 
 dialog.addEventListener("close",()=>{

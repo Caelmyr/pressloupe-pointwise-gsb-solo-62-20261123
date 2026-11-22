@@ -6,6 +6,7 @@ from scipy import ndimage
 
 from .analysis import capture_provenance, specimen_provenance
 from .art import ACCENT, INK, SHADOW, base_rgba, curve_points, stored_preview
+from .diecut import trace_against_layout
 from .geometry import active_region, polygon_mask, region_domain, signed_area, specimen_frame, validate_polygon
 from .model import InputError, collection, dictionary, enumeration, identity, numeric_pair, string
 
@@ -256,7 +257,12 @@ def create_metrology(store, specimen_id, payload):
     available = region_domain(frame.extent, tile) & frame.valid
     if mode == "trace":
         points = path_points(data.get("points"))
-        shape, overlay = trace_geometry(frame, available, points)
+        layout_id = data.get("layout_id")
+        if layout_id:
+            shape, _ = trace_geometry(frame, available, points)
+            shape, overlay = trace_against_layout(store, tile, frame, points, layout_id, shape)
+        else:
+            shape, overlay = trace_geometry(frame, available, points)
         region = None
     else:
         region = active_region(tile, identity(data.get("region_id"), "Region ID"))

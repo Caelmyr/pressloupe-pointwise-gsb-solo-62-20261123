@@ -8,6 +8,7 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .analysis import approve_reference, evaluate
 from .demo import load_training, preview_photo
+from .diecut import create_layout
 from .evidence import (
     artifact_json,
     create_evidence,
@@ -35,6 +36,7 @@ from .model import (
     enumeration,
     flag_record_fields,
     identity,
+    integer,
     match_slot,
     model_version,
     string,
@@ -427,6 +429,43 @@ def register_desks(api, store, heavy):
         return binary_response(artifact_json(record), "application/json", name + ".json")
 
 
+def register_layouts(api, store, heavy):
+    @api.get("/specimens/<specimen_id>/layouts")
+    def layouts(specimen_id):
+        return jsonify({"items": store.list_layouts(identity(specimen_id, "Specimen ID"))})
+
+    @api.post("/specimens/<specimen_id>/layouts")
+    def layout_make(specimen_id):
+        with heavy:
+            record = create_layout(store, specimen_id, json_request())
+        return jsonify(record), 201
+
+    @api.get("/layouts/<layout_id>")
+    def layout_show(layout_id):
+        return jsonify(store.layout(layout_id))
+
+    @api.post("/layouts/<layout_id>/select")
+    def layout_select(layout_id):
+        data = json_request()
+        position = integer(data.get("position"), "Press position", lower=-1, upper=1)
+        record = store.select_layout_position(layout_id, model_version(data), position)
+        return jsonify(record)
+
+    @api.get("/layouts/<layout_id>/overlay/<side>/<position>")
+    def layout_overlay_image(layout_id, side, position):
+        record = store.layout(layout_id)
+        chosen = enumeration(side, ("front", "back"), "Layout side")
+        shift = enumeration(position, ("-1", "0", "1"), "Press position")
+        digest = record["evaluation"]["overlays"][chosen].get(shift)
+        return png_blob(store, digest)
+
+    @api.get("/layouts/<layout_id>/data.json")
+    def layout_document(layout_id):
+        record = store.layout(layout_id)
+        name = filename_stem(record["name"], "die-layout")
+        return binary_response(artifact_json(record), "application/json", name + ".json")
+
+
 def register_training(api, store, heavy):
     @api.get("/training/hero.png")
     def synthetic_thumbnail():
@@ -507,5 +546,6 @@ def create_app(data_dir=None):
     register_measurements(api, store, heavy)
     register_artifacts(api, store, heavy)
     register_desks(api, store, heavy)
+    register_layouts(api, store, heavy)
     app.register_blueprint(api)
     return app

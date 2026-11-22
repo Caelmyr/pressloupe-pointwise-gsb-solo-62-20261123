@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS metrology (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS metrology_tile ON metrology(tile_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS layouts (
+    id TEXT PRIMARY KEY,
+    tile_id TEXT NOT NULL REFERENCES specimens(id),
+    document TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS layouts_tile ON layouts(tile_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -474,3 +481,47 @@ class Store:
                 "SELECT document FROM metrology WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
             ).fetchall()
             return [json.loads(row["document"]) for row in rows]
+
+    def save_layout(self, fields):
+        record = {**fields, "id": make_id(), "created_at": timestamp(), "version": 1, "selected": None}
+        with self.transaction(write=True) as conn:
+            conn.execute(
+                "INSERT INTO layouts(id,tile_id,document,created_at) VALUES (?,?,?,?)",
+                (record["id"], record["tile_id"], document(record), record["created_at"]),
+            )
+            event(conn, record["tile_id"], "layout", f"Saved die layout: {record['name']}")
+        return record
+
+    def _layout(self, conn, identifier):
+        layout_id = identity(identifier, "Die layout ID")
+        row = conn.execute("SELECT document FROM layouts WHERE id=?", (layout_id,)).fetchone()
+        return artifact_row(row, "Die layout")
+
+    def layout(self, identifier):
+        with self.connect() as conn:
+            return self._layout(conn, identifier)
+
+    def list_layouts(self, tile_id):
+        chosen = identity(tile_id, "Specimen ID")
+        with self.connect() as conn:
+            self._tile(conn, chosen)
+            rows = conn.execute("SELECT document FROM layouts ORDER BY rowid DESC LIMIT 100").fetchall()
+        return [
+            item
+            for item in (json.loads(row["document"]) for row in rows)
+            if item["tile_id"] == chosen or item["back_tile_id"] == chosen
+        ]
+
+    def select_layout_position(self, identifier, expected_version, position):
+        with self.transaction(write=True) as conn:
+            record = self._layout(conn, identifier)
+            self.require_version(record, expected_version)
+            record["selected"] = position
+            record["version"] += 1
+            conn.execute("UPDATE layouts SET document=? WHERE id=?", (document(record), record["id"]))
+            labels = {-1: "Left", 0: "Center", 1: "Right"}
+            event(
+                conn, record["tile_id"], "layout",
+                f"Chose press position {labels[position]} for die layout: {record['name']}",
+            )
+            return record

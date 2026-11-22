@@ -18,6 +18,7 @@ const icons = {
   clock: "<circle cx='12' cy='12' r='8'/><path d='M12 8v5l3 2'/>",
   edit: "<path d='m5 16 11-11 3 3L8 19H5v-3zm9-9 3 3'/>",
   compare: "<rect x='3' y='5' width='18' height='14' rx='2'/><path d='M12 5v14m-4-7h1m6 0h1'/>",
+  die: "<path d='M4 4h16v16H4z'/><path d='M9 9h6v6H9z'/><path d='M4 4l5 5m11-5-5 5m5 11-5-5m-11 5 5-5'/>",
 };
 
 export const q = (selector, root = document) => root.querySelector(selector);
