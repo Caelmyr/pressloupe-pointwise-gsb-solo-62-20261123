@@ -6,7 +6,7 @@ from threading import BoundedSemaphore
 from flask import Blueprint, Flask, Response, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
-from .analysis import approve_reference, evaluate
+from .analysis import approve_reference, approve_swatch_reference, evaluate
 from .demo import load_training, preview_photo
 from .evidence import (
     artifact_json,
@@ -46,6 +46,7 @@ from .photos import png_bytes
 from .review import parse_reviews, review_selection, save_reviews
 from .store import Store
 from .study import create_study, public_metrics
+from .swatch import build_plan, plan_overlay
 from .workspace import (
     calibrate,
     clear_calibration,
@@ -294,6 +295,40 @@ def register_measurements(api, store, heavy):
     def reference_save():
         with heavy:
             ref = approve_reference(store, json_request())
+        return jsonify(ref), 201
+
+    @api.post("/library/swatch/plan")
+    def swatch_plan():
+        from .model import swatch_plan_fields
+        data = swatch_plan_fields(json_request())
+        with heavy:
+            plan = build_plan(
+                store,
+                store.tile(data["tile_id"]),
+                store.tile(data["target_tile_id"]),
+                data,
+            )
+        return jsonify(plan)
+
+    @api.post("/library/swatch/overlay")
+    def swatch_plan_image():
+        from .model import swatch_plan_fields
+        data = swatch_plan_fields(json_request())
+        with heavy:
+            plan = build_plan(
+                store,
+                store.tile(data["tile_id"]),
+                store.tile(data["target_tile_id"]),
+                data,
+            )
+            index = max(0, min(len(plan["candidates"]) - 1, int(json_request().get("candidate", 0) or 0)))
+            image = plan_overlay(store, store.tile(data["tile_id"]), plan, candidate_index=index)
+        return image_response(image)
+
+    @api.post("/library/swatch")
+    def swatch_save():
+        with heavy:
+            ref = approve_swatch_reference(store, json_request())
         return jsonify(ref), 201
 
     @api.post("/library/<reference_id>/retire")

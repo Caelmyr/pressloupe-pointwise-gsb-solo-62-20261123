@@ -19,7 +19,18 @@ export function metricSet(record) {
     craze: () => [["Trace length",`${n(m.network_length)} ${m.length_unit}`],["Junctions",n(m.junctions,0)],["Closed cells",n(m.closed_cell_count,0)]],
     rim: () => [["Rim median ΔE",n(m.all_edges.median_from_center_delta_e)],["Rim pixels",n(m.all_edges.pixels,0)],["Interior L*",n(m.interior.median_lab[0])]],
     profile: () => [["Distance",`${n(m.line_length)} ${m.distance_unit}`],["Valid stations",`${m.supported_stations}/${m.requested_stations}`],["Median L*",n(m.features.median_lightness)]],
-    reference: () => [["Specimen to reference ΔE",n(m.delta_e76)],["Lightness difference",n(m.delta_lab[0])],["Dispersion difference",n(m.dispersion_delta)]],
+    reference: () => {
+      if (record.metrics.illuminant_matches) {
+        const rows=record.metrics.illuminant_matches;
+        return [
+          ["Standard lamp ΔE",lampValue(rows,"lamp-standard")],
+          ["Warm lamp ΔE",lampValue(rows,"lamp-warm")],
+          ["Lamps measured",`${record.metrics.measured_lamp_count}/${rows.length}`],
+          ["Worst lamp ΔE",n(record.metrics.worst_delta_e76)],
+        ];
+      }
+      return [["Specimen to reference ΔE",n(m.delta_e76)],["Lightness difference",n(m.delta_lab[0])],["Dispersion difference",n(m.dispersion_delta)]];
+    },
     marking: () => [["Measured stations",percent(m.observed_percent)],["Rule among measured",percent(m.midrib_percent_of_observed)],["Runs",m.runs.length]],
     joint: () => [["Measured stations",m.measured_stations],["Unmeasured stations",m.unmeasured_stations],["Median absolute contrast",n(m.median_absolute_step,4)]],
     blade: () => [["Marked axis",`${n(m.axis_length)} ${m.length_unit}`],["Largest visible width",m.maximum_width==null?"—":`${n(m.maximum_width)} ${m.length_unit}`],["Supported sections",`${m.observed_stations}/${m.requested_stations}`]],
@@ -121,7 +132,28 @@ function rimDetail(m) {
   ${table(["Side","Pixels","Median from interior ΔE","Excluded"],m.sides.map(item=>[item.side,item.stats?.pixels,n(item.stats?.median_from_center_delta_e),percent(item.excluded_percent)]))}`;
 }
 
+const lampName={ "lamp-standard":"Standard lamp (D50 booth)","lamp-warm":"Workshop warm lamp" };
+function lampValue(rows,role) {
+  const row=rows.find(item=>item.role===role);
+  if (!row || !row.available) return "missing — not captured";
+  return n(row.delta_e76);
+}
+
 function referenceDetail(m) {
+  if (m.illuminant_matches) {
+    const rows=m.illuminant_matches.map(item=>{
+      if (!item.available) return [lampName[item.role]||item.role,"Missing",item.note||item.status,"—","—"];
+      return [
+        lampName[item.role]||item.role,n(item.delta_e76),
+        item.delta_lab.map(v=>n(v)).join(" / "),
+        item.observed_swatch,item.approved_swatch,
+      ];
+    });
+    return `<h3>${e(m.reference_title)} · same physical swatch, lamp by lamp</h3>
+      <p class="notice">${e(m.capture_note)}</p>
+      ${table(["Illuminant","ΔE76 to physical swatch","ΔL / Δa / Δb","New sheet","Approved swatch"],rows)}
+      <p class="soft">Map shown: ${e(lampName[m.map_illuminant]||m.map_illuminant)}. Hatched/unknown map pixels were excluded for glare or support; they are not part of any average.</p>`;
+  }
   return `<h3>${e(m.reference_title)}</h3>
     <div class="metrics">${stat("Specimen",m.specimen.swatch)}${stat("Approved reference",m.reference.swatch)}</div>
     <p class="notice">${e(m.capture_note)}</p>`;

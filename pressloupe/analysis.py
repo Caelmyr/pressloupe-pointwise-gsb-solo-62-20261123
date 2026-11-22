@@ -11,6 +11,7 @@ from .art import (
     stored_preview,
 )
 from .color import (
+    calibration_for,
     capture_basis,
     compare_reference,
     corrected_linear,
@@ -26,15 +27,23 @@ from .craze import measure_craze
 from .rim import measure_rim
 from .geometry import active_region, analysis_mask, region_domain, specimen_frame
 from .lighting import measure_direction, measure_glare
-from .model import ANALYSIS_LABELS, InputError, library_fields
+from .model import LAMP_ROLES, ANALYSIS_LABELS, InputError, library_fields, swatch_approve_fields
 from .parameters import TOOLS, analysis_parameters
 from .profile import measure_profile
 from .dots import measure_dots
 from .store import key_for
+from .swatch import (
+    dual_illuminant_match,
+    lamp_fingerprint,
+    lamp_views,
+    measure_swatch_rect,
+    swatch_overlay_art,
+    store_swatch_art,
+)
 from .texture import measure_texture
 
 
-ANALYZER_VERSION = 2
+ANALYZER_VERSION = 3
 
 
 def selected_capture(tile, explicit, expected_role=None):
@@ -129,6 +138,76 @@ def approve_reference(store, payload):
     return store.add_reference({**fields, **reference})
 
 
+def approve_swatch_reference(store, payload):
+    """Freeze one physical cut swatch with a fingerprint for each lamp."""
+    fields = swatch_approve_fields(payload)
+    tile = store.tile(fields["tile_id"])
+    target_tile = store.tile(fields["target_tile_id"])
+    views, per_lamp, rect, coverage, glare, region = measure_swatch_rect(store, tile, fields)
+    target_views, _ = lamp_views(store, target_tile)
+    target_region = active_region(target_tile, fields["target_region_id"])
+    target_domain = region_domain(
+        target_views[LAMP_ROLES[0]].frame.extent, target_tile, target_region,
+    )
+    target_fingerprints = {}
+    for role in LAMP_ROLES:
+        view = target_views[role]
+        target_mask = target_domain & view.frame.valid & ~view.frame.clipped
+        target_fingerprints[role], _, _ = lamp_fingerprint(view, target_mask)
+    illuminants = {}
+    for role in LAMP_ROLES:
+        view = views[role]
+        fingerprint, _, _ = lamp_fingerprint(view, per_lamp[role])
+        target = target_fingerprints[role]
+        correction = calibration_for(tile, view.frame)
+        illuminants[role] = {
+            "fingerprint": fingerprint,
+            "source": capture_provenance(view.frame),
+            "basis": capture_basis(tile, view.frame, correction),
+            "eligible_pixels": int(per_lamp[role].sum()),
+            "glare_pixels_excluded": int((glare[role] & rect).sum()),
+            "target_fingerprint": target,
+            "target_delta_e76": round(
+                float(np.linalg.norm(
+                    np.asarray(fingerprint["median_lab"]) - np.asarray(target["median_lab"]),
+                )),
+                3,
+            ),
+        }
+    standard_frame = views[LAMP_ROLES[0]].frame
+    annotated = swatch_overlay_art(standard_frame, views[LAMP_ROLES[0]].linear, rect, per_lamp)
+    record = {
+        "tile_id": fields["tile_id"],
+        "title": fields["title"],
+        "family": fields["family"],
+        "color_number": fields["color_number"],
+        "notes": fields["notes"],
+        "region": region,
+        "specimen": specimen_provenance(tile),
+        "target_specimen": specimen_provenance(target_tile),
+        "target_region": target_region,
+        "illuminants": illuminants,
+        "swatch": {
+            "bounds": fields["bounds"],
+            "size_mm": [fields["width_mm"], fields["height_mm"]],
+            "orientation": fields["orientation"],
+            "plane_size": list(standard_frame.extent),
+            "coverage": coverage,
+        },
+        "glare_settings": {
+            "glare_quantile": fields["glare_quantile"],
+            "glare_ratio": fields["glare_ratio"],
+        },
+        "dual_illuminant": True,
+        "annotated_digest": store_swatch_art(store, annotated),
+        # Retained so older single-capture code paths and records keep working.
+        "fingerprint": illuminants[LAMP_ROLES[0]]["fingerprint"],
+        "basis": illuminants[LAMP_ROLES[0]]["basis"],
+        "source": illuminants[LAMP_ROLES[0]]["source"],
+    }
+    return store.add_reference(record)
+
+
 def resolve_parameters(store, tile, payload):
     params = analysis_parameters(payload)
     kind = params["kind"]
@@ -143,9 +222,39 @@ def resolve_parameters(store, tile, payload):
         reference = store.reference(params["options"]["reference_id"])
         if reference["retired"]:
             raise InputError("The selected reference has been retired.")
+        params["lamp_photo_ids"] = resolve_lamp_photos(tile, reference, params)
     if kind == "defects" and params["options"]["maximum_area"] <= params["options"]["minimum_area"]:
         raise InputError("Maximum spot size must exceed the minimum.")
     return params, reference
+
+
+def resolve_lamp_photos(tile, reference, params):
+    """Map each signing lamp to the explicitly chosen capture, never silently.
+
+    A lamp that the caller did not supply is left unmapped; the match then
+    reports that illuminant as missing instead of substituting another photo.
+    """
+    if not reference.get("dual_illuminant"):
+        return {}
+    registered = {tile["plane"]["photo_id"], *tile["registrations"]}
+    by_id = {photo["id"]: photo for photo in tile["photos"]}
+    chosen = {}
+    explicit_primary = params["photo_id"]
+    explicit_second = params.get("lamp_comparison_id")
+    for role in LAMP_ROLES:
+        wanted = explicit_primary if role == LAMP_ROLES[0] else explicit_second
+        if not wanted:
+            continue
+        photo = by_id.get(wanted)
+        if photo is None or photo["id"] not in registered:
+            raise InputError(f"Register the selected {role} capture before matching.")
+        if photo["role"] != role:
+            raise InputError(
+                f"The {role} comparison needs a capture labeled {role}. "
+                "A capture from another position or illuminant cannot be substituted.",
+            )
+        chosen[role] = wanted
+    return chosen
 
 
 def theoretical_legend(kind, scale=None):
@@ -214,6 +323,10 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
         image = profile_overlay(frame, metrics["endpoints"], options["band_pixels"], linear)
         return metrics, image, None
     if kind == "reference":
+        if reference.get("dual_illuminant"):
+            # Handled directly in evaluate() because the overlay can belong to a
+            # different lamp frame than the primary capture.
+            return None, None, None
         fingerprint = reference_fingerprint(linear, support)
         basis = capture_basis(tile, frame, correction)
         metrics = compare_reference(fingerprint, reference["fingerprint"], basis, reference["basis"])
@@ -225,6 +338,37 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
         scale = formula_scale(map_values, support, 12)
         return metrics, magnitude_overlay(frame, map_values, support, scale), theoretical_legend(kind, scale)
     raise RuntimeError(f"Unsupported image measurement: {kind}.")
+
+
+def evaluate_dual_illuminant(store, tile, params, reference, area):
+    glare_params = reference.get("glare_settings", {"glare_quantile": 0.90, "glare_ratio": 1.18})
+    outcome, masks, selected = dual_illuminant_match(
+        store, tile, params["region_id"], params["lamp_photo_ids"], reference, glare_params,
+    )
+    # The map uses one lamp's own frame; glare and pixels that lamp cannot see
+    # are marked unknown instead of being folded into a false average.
+    map_role = LAMP_ROLES[0] if LAMP_ROLES[0] in masks else next(iter(masks))
+    primary = selected[map_role]
+    primary_mask = masks[map_role]
+    approved_median = np.asarray(
+        reference["illuminants"][map_role]["fingerprint"]["median_lab"], dtype=np.float32,
+    )
+    map_values = np.linalg.norm(linear_lab_for(primary) - approved_median, axis=-1)
+    outcome["map_illuminant"] = map_role
+    support = analysis_mask(primary.frame, primary_mask, minimum=80, allow_clipped=False)
+    unknown = area & ~support
+    scale = formula_scale(map_values, support, 12)
+    image = magnitude_overlay(primary.frame, map_values, support, scale, unknown=unknown)
+    outcome["capture_note"] = (
+        "Per-lamp ΔE values each compare same-illuminant captures of the same physical swatch. "
+        "Missing lamps are reported explicitly and are never substituted by another position."
+    )
+    return outcome, image, theoretical_legend("reference", scale), primary, selected
+
+
+def linear_lab_for(view):
+    from .color import linear_lab
+    return linear_lab(view.linear)
 
 
 def compute_pair(tile, first, second, area, params):
@@ -266,8 +410,15 @@ def evaluate(store, tile_id, payload):
     pair = specimen_frame(store.blobs, tile, params["comparison_id"]) if params["comparison_id"] else None
     correction = None
     linear = frame.linear
+    map_frame = frame
+    dual_lamp_views = None
     if pair is not None:
         metrics, picture, legend = compute_pair(tile, frame, pair, area, params)
+    elif params["kind"] == "reference" and reference.get("dual_illuminant"):
+        metrics, picture, legend, map_frame, dual_lamp_views = evaluate_dual_illuminant(
+            store, tile, params, reference, area,
+        )
+        linear, correction = corrected_linear(tile, frame, params["apply_neutral"])
     else:
         linear, correction = corrected_linear(tile, frame, params["apply_neutral"])
         metrics, picture, legend = compute_single(store, tile, frame, region, area, linear, correction, params, reference)
@@ -286,6 +437,11 @@ def evaluate(store, tile_id, payload):
             "specimen": specimen_provenance(tile),
             "photo": capture_provenance(frame),
             "paired_photo": capture_provenance(pair) if pair else None,
+            "lamp_photos": [
+                capture_provenance(view.frame)
+                for role, view in sorted(dual_lamp_views.items())
+                if view is not None and role in params["lamp_photo_ids"]
+            ] if dual_lamp_views is not None else None,
             "region": region,
             "exclusions": [item for item in tile["regions"] if item["purpose"] == "ignore"],
             "neutral_card": correction,
@@ -293,12 +449,17 @@ def evaluate(store, tile_id, payload):
                 "id": reference["id"],
                 "version": reference["version"],
                 "specimen": reference["specimen"],
-                "capture": reference["source"],
-                "basis": reference["basis"],
+                "capture": reference.get("source"),
+                "basis": reference.get("basis"),
+                "dual_illuminant": bool(reference.get("dual_illuminant")),
+                "illuminants": sorted(reference["illuminants"].keys())
+                if reference.get("dual_illuminant") else None,
             } if reference else None,
         },
         "pictures": {
-            "source": stored_preview(base_rgba(frame, linear), store.blobs),
+            "source": stored_preview(base_rgba(map_frame.frame, map_frame.linear), store.blobs)
+            if dual_lamp_views is not None
+            else stored_preview(base_rgba(frame, linear), store.blobs),
             "overlay": stored_preview(picture, store.blobs),
             "paired": stored_preview(base_rgba(pair), store.blobs) if pair else None,
         },

@@ -118,7 +118,7 @@ TOOLS = {
     },
     "reference": {
         "label": "Reference match",
-        "description": "Compare this specimen with one frozen approved visual sample.",
+        "description": "Compare this specimen with one frozen approved physical swatch, lamp by lamp.",
         "fields": {
             "reference_id": {"kind": "reference", "label": "Approved visual reference", "default": None},
         },
@@ -180,5 +180,7 @@ def analysis_parameters(payload):
         "region_id": identity(raw["region_id"], "Sampling region") if raw.get("region_id") else None,
         "photo_id": identity(raw["photo_id"], "Photo ID") if raw.get("photo_id") else None,
         "comparison_id": identity(raw["comparison_id"], "Paired photo ID") if raw.get("comparison_id") else None,
+        "lamp_comparison_id": identity(raw["lamp_comparison_id"], "Second lamp photo ID")
+        if raw.get("lamp_comparison_id") else None,
         "apply_neutral": flag(raw.get("apply_neutral", True), "Apply card correction"),
     }

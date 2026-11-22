@@ -207,6 +207,22 @@ def measurement_article(record, sheet):
             continue
         label = key.replace("_", " ")
         rows.append(f"<tr><th>{escape(label)}</th><td>{escape(str(value))}</td></tr>")
+    lamp_table = ""
+    if metrics.get("illuminant_matches"):
+        lamp_rows = "".join(
+            "<tr><td>{role}</td><td>{status}</td><td>{delta}</td><td>{note}</td></tr>".format(
+                role=escape(entry["role"]),
+                status=escape(entry["status"]),
+                delta=escape("" if entry.get("delta_e76") is None else str(entry["delta_e76"])),
+                note=escape(entry.get("note", "")),
+            )
+            for entry in metrics["illuminant_matches"]
+        )
+        lamp_table = (
+            "<h3>Same-illuminant matches against the physical swatch</h3>"
+            "<table><thead><tr><th>Illuminant</th><th>Status</th><th>ΔE76</th><th>Note</th></tr></thead>"
+            f"<tbody>{lamp_rows}</tbody></table>"
+        )
     capture = record["provenance"]["photo"]
     title = escape(record["label"])
     location = escape(capture["display_name"])
@@ -217,7 +233,7 @@ def measurement_article(record, sheet):
         figures = f'<img alt="{title} from {location}" src="{sheet}">'
     return (
         f'<article><h2>{title}</h2><p>{location} · specimen revision {rev}</p>'
-        f'{figures}<table>{summaries}</table></article>'
+        f'{figures}{lamp_table}<table>{summaries}</table></article>'
     )
 
 
@@ -306,7 +322,23 @@ def summarize_result(record):
         "id", "kind", "label", "tile_id", "source_version", "created_at", "version", "basis",
     )}
     summary["tile_name"] = record["provenance"]["specimen"]["name"]
-    summary["brief"] = {key: record["metrics"][key] for key in metrics}
+    if record["kind"] == "reference" and record["metrics"].get("illuminant_matches"):
+        summary["brief"] = {
+            "reference_title": record["metrics"]["reference_title"],
+            "worst_delta_e76": record["metrics"]["worst_delta_e76"],
+            "measured_lamp_count": record["metrics"]["measured_lamp_count"],
+            "missing_lamp_count": record["metrics"]["missing_lamp_count"],
+            "illuminant_matches": [
+                {
+                    "role": entry["role"],
+                    "status": entry["status"],
+                    "delta_e76": entry.get("delta_e76"),
+                }
+                for entry in record["metrics"]["illuminant_matches"]
+            ],
+        }
+    else:
+        summary["brief"] = {key: record["metrics"][key] for key in metrics}
     summary["overlay_url"] = f"/api/results/{record['id']}/image/overlay"
     return summary
 

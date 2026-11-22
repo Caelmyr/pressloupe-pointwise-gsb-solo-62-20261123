@@ -22,6 +22,9 @@ let drawPoints=[];
 let drawLimit=0;
 let currentForm=null;
 let reviewUploads=[];
+let swatchPlanData=null;
+let swatchCandidate=0;
+let measureFormValues={};
 
 function toast(message, isError=false) {
   clearTimeout(toastTimer);
@@ -70,9 +73,9 @@ function sources(selects, selected, optional) {
   return (optional?option("",optional,selected):"")+selects.map(item=>option(item.id,item.role_label+" · "+item.name,selected)).join("");
 }
 
-function regions(purpose,includeNone=true) {
+function regions(purpose,includeNone=true,selected="") {
   const choices=state.tile.regions.filter(item=>purpose?item.purpose===purpose:item.purpose!=="ignore");
-  return (includeNone?option("","Entire plane",""):"")+choices.map(item=>option(item.id,item.name)).join("");
+  return (includeNone?option("","Entire plane",selected):"")+choices.map(item=>option(item.id,item.name,selected)).join("");
 }
 
 function imagesForCapture() {
@@ -132,24 +135,45 @@ function optionInput(key,item) {
   if (kind==="choice") return selectField(label,key,item.choices.map(choice=>option(choice,choice,value)).join(""));
   if (kind==="flag") return checkField(label,key,value);
   if (kind==="region") return selectField(label,key,option("","Auto / current area","")+state.tile.regions.filter(record=>item.purpose?record.purpose===item.purpose:record.purpose!=="ignore").map(record=>option(record.id,record.name)).join(""));
-  if (kind==="reference") return selectField(label,key,option("","Choose a reference","")+state.refs.map(record=>option(record.id,record.title)).join(""));
+  if (kind==="reference") {
+    const current=measureFormValues[key]??"";
+    return selectField(label,key,option("","Choose a reference",current)+state.refs.map(record=>option(record.id,record.title,current)).join(""));
+  }
   if (kind==="point") return `<div class="field"><span>${e(label)} (X, Y)</span><div class="point-group">
     ${value.map((coordinate,index)=>`<input name="${key}-${index}" aria-label="${e(label)} ${index===0?"X":"Y"}" type="number" min="0" max="1" step=".001" value="${coordinate}">`).join("")}</div></div>`;
   return "";
+}
+
+function lampWarmChoices(selected="") {
+  const lamps=state.tile.photos.filter(item=>item.role==="lamp-warm"&&item.registered_url);
+  return option("","— not captured; report as missing —",selected)+
+    lamps.map(item=>option(item.id,`${item.role_label} · ${item.name}`,selected)).join("");
 }
 
 function measureControls() {
   const tool=state.config.tools[state.tool];
   const all=state.tile.photos.filter(item=>item.registered_url);
   const match=field=>sources(tool.capture_pair?all.filter(item=>item.role===tool.capture_pair[field]):all,null,tool.capture_pair?"Auto if unique":"Base capture");
+  // Preserve selections across the form rebuild triggered by choosing a
+  // dual-lamp reference, so the reference does not silently reset to blank.
+  const prior=q("#measurement-form")?Object.fromEntries(new FormData(q("#measurement-form")).entries()):{};
+  measureFormValues={...measureFormValues,...prior};
+  const saved=key=>measureFormValues[key]??"";
+  const chosenRef=state.refs.find(item=>item.id===saved("reference_id"));
+  const dualLamp=state.tool==="reference" && chosenRef?.dual_illuminant;
+  const primaryChoices=dualLamp
+    ? option("","— not captured; report as missing —",saved("photo_id"))+all.filter(item=>item.role==="lamp-standard").map(item=>option(item.id,`${item.role_label} · ${item.name}`,saved("photo_id"))).join("")
+    : match(0);
   return `<form id="measurement-form" class="form-stack">
     ${selectField("Measurement","kind",Object.entries(state.config.tools).map(([name,item])=>option(name,item.label,state.tool)).join(""))}
     <p class="soft">${e(tool.description)}</p>
-    ${selectField(tool.capture_pair?"First photo":"Photo source","photo_id",match(0))}
+    ${selectField(dualLamp?"Standard lamp capture":"Photo source","photo_id",primaryChoices)}
+    ${dualLamp?selectField("Warm lamp capture (same physical area)","lamp_comparison_id",lampWarmChoices(saved("lamp_comparison_id"))):""}
     ${tool.capture_pair?selectField("Paired photo","comparison_id",match(1)):checkField("Apply saved neutral balance","apply_neutral",true)}
-    ${selectField("Region","region_id",regions())}
+    ${selectField("Region","region_id",regions(undefined,true,saved("region_id")))}
     <div class="form-columns">${Object.entries(tool.fields).map(([key,item])=>optionInput(key,item)).join("")}</div>
     ${["profile","marking","joint","blade"].includes(state.tool)?btn("Mark line on image","mark-profile","secondary","measure"):""}
+    ${dualLamp?'<p class="soft">Each lamp is compared only against the same lamp on the approved swatch. A lamp left as “not captured” is reported missing, never replaced by the other lamp or another position.</p>':""}
     <button class="button primary" type="submit">${icon("measure")}Run measurement</button>
   </form>`;
 }
@@ -213,6 +237,7 @@ function tilePage() {
   const descriptors=[tile.glaze,tile.body,tile.firing,tile.width_mm&&tile.height_mm?`${tile.width_mm} × ${tile.height_mm} mm`:null].filter(Boolean);
   return `<header class="page-head"><div><p class="eyebrow">${tile.synthetic?"Synthetic training specimen":"Specimen"}</p><h1>${e(tile.name)}</h1>
   <p>${e(descriptors.join(" · ") || "Registered press proof")}</p></div><div class="actions">${btn("Edit specimen","tile-edit","secondary","edit")}
+  ${btn("Plan cut swatch","swatch-plan","secondary","sample")}
   ${btn("Approve reference","reference-add","secondary","book")}</div></header>
   <nav class="tabs" aria-label="Specimen tools">${tabs.map(([key,label,glyph])=>`<button type="button" class="tab ${state.tab===key?"active":""}" data-do="tile-tab" data-value="${key}">${icon(glyph)}${e(label)}</button>`).join("")}</nav>
   ${{captures,regions:regionPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
@@ -220,10 +245,15 @@ function tilePage() {
 
 function libraryPage() {
   const items=state.refs;
-  return `<header class="page-head"><div><h1>Reference library</h1><p>Approved color samples retain their capture, region, and neutral-card basis.</p></div></header>
-    ${items.length?`<div class="collection">${items.map(ref=>`<article class="card stack">${img(`/api/library/${ref.id}/image`,ref.title,'loading="lazy"')}
-    <h3>${e(ref.title)}</h3><p>${e(ref.family || ref.specimen.name)} · ${e(ref.fingerprint.swatch)}</p>
-    <div class="actions">${link("Open specimen","#tile:"+ref.tile_id,"secondary","tiles")}${btn("Retire","reference-retire","ghost",null,`data-id="${ref.id}"`)}</div></article>`).join("")}</div>`:empty("Approve a visual reference from a specimen with a registered capture.",link("Open specimens","#collection","primary","tiles"))}`;
+  return `<header class="page-head"><div><h1>Reference library</h1><p>Approved color samples retain their capture, region, and neutral-card basis. Dual-lamp swatches freeze one physical 6 × 8 mm cut under both lamps.</p></div></header>
+    ${items.length?`<div class="collection">${items.map(ref=>{
+      const dual=ref.dual_illuminant;
+      const lampLine=dual?`<p class="soft">${e(ref.color_number||"Spot swatch")} · cut ${n(ref.swatch.size_mm[0])} × ${n(ref.swatch.size_mm[1])} mm · standard ΔE ${n(ref.illuminants["lamp-standard"].target_delta_e76)} · warm ΔE ${n(ref.illuminants["lamp-warm"].target_delta_e76)}</p>`
+        :`<p>${e(ref.family || ref.specimen.name)} · ${e(ref.fingerprint.swatch)}</p>`;
+      return `<article class="card stack">${img(`/api/library/${ref.id}/image`,ref.title,'loading="lazy"')}
+    <h3>${e(ref.title)}</h3>${dual?badge("Dual-lamp physical swatch","ready"):""}${lampLine}
+    <div class="actions">${link("Open specimen","#tile:"+ref.tile_id,"secondary","tiles")}${btn("Retire","reference-retire","ghost",null,`data-id="${ref.id}"`)}</div></article>`;
+    }).join("")}</div>`:empty("Approve a visual reference from a specimen with a registered capture.",link("Open specimens","#collection","primary","tiles"))}`;
 }
 
 function studyPanel() {
@@ -492,6 +522,119 @@ function refForm() {
     });
 }
 
+const lampLabel=role=>({ "lamp-standard":"Standard lamp","lamp-warm":"Workshop warm lamp" }[role]||role);
+
+function swatchCandidateRows(plan) {
+  return table(["Rank","Orientation","Worst-lamp ΔE","Mean ΔE","Standard lamp ΔE","Warm lamp ΔE","Common pixels"],
+    plan.candidates.map((c,i)=>[
+      i+1,c.orientation==="width-x"?"6 mm across × 8 mm tall":"8 mm across × 6 mm tall",
+      n(c.worst_lamp_delta_e76),n(c.mean_lamp_delta_e76),
+      n(c.lamps["lamp-standard"].delta_e76_to_target),
+      n(c.lamps["lamp-warm"].delta_e76_to_target),
+      n(c.coverage.common_visible_pixels,0),
+    ]));
+}
+
+async function swatchPlanForm() {
+  if (!state.tile.plane) throw Error("Register the two lamp captures before planning a swatch.");
+  const tiles=(await api("/api/specimens")).items;
+  const targetChoices=tiles.map(item=>option(item.id,item.name)).join("");
+  modal("Plan a 6 × 8 mm cut swatch",`
+    <p class="notice">The same physical rectangle is measured in the standard-lamp and warm-lamp captures. Glare, out-of-paper and pixels not seen by both lamps are excluded per lamp; they are never averaged across lamps or positions.</p>
+    <div class="form-columns">
+      ${selectField("Target swatch specimen (same color number)","target_tile_id",targetChoices)}
+      ${selectField("Target region","target_region_id",'<option value="">Loading…</option>')}
+      ${selectField("Search region on this sheet","region_id",regions())}
+      ${numField("Swatch width mm","width_mm",6,2,40,0.5)}
+      ${numField("Swatch height mm","height_mm",8,2,40,0.5)}
+      ${numField("Search stride mm","stride_mm",1,0.2,6,0.5)}
+    </div>
+    <div id="swatch-report"></div>`,
+    "Approve selected swatch into library",async data=>{
+      if (!swatchPlanData) throw Error("Run the plan before approving a swatch.");
+      const chosen=swatchPlanData.candidates[swatchCandidate];
+      const payload={
+        tile_id:state.tile.id,
+        target_tile_id:data.get("target_tile_id"),
+        title:state.tile.name+" physical swatch",
+        color_number:"",
+        width_mm:Number(data.get("width_mm")),
+        height_mm:Number(data.get("height_mm")),
+        bounds:chosen.bounds,
+        orientation:chosen.orientation,
+        region_id:data.get("region_id")||null,
+        target_region_id:data.get("target_region_id")||null,
+      };
+      await api("/api/library/swatch",{method:"POST",body:payload});
+      await gatherTile();
+      commitModal();
+      toast("Cut swatch approved into the Reference library.");
+      location.hash="references";
+    },true,btn("Preview ranked positions","swatch-preview","secondary","plot"));
+  const targetSelect=q("#field-target_tile_id");
+  async function loadTargetRegions() {
+    const tile=await api("/api/specimens/"+targetSelect.value);
+    const usable=tile.regions.filter(item=>item.purpose!=="ignore");
+    q("#field-target_region_id").innerHTML=usable.map(item=>option(item.id,item.name)).join("")
+      || '<option value="">No regions on target</option>';
+  }
+  targetSelect.addEventListener("change",loadTargetRegions);
+  await loadTargetRegions();
+}
+
+async function runSwatchPreview() {
+  const data=formData();
+  const payload={
+    tile_id:state.tile.id,
+    target_tile_id:data.get("target_tile_id"),
+    region_id:data.get("region_id")||null,
+    target_region_id:data.get("target_region_id")||null,
+    width_mm:Number(data.get("width_mm")),height_mm:Number(data.get("height_mm")),
+    stride_mm:Number(data.get("stride_mm")),glare_quantile:0.9,glare_ratio:1.18,min_support_fraction:0.8,
+  };
+  const token=dialogToken;
+  const [plan,res]=await Promise.all([
+    api("/api/library/swatch/plan",{method:"POST",body:payload}),
+    request("/api/library/swatch/overlay",{method:"POST",body:{...payload,candidate:swatchCandidate}}),
+  ]);
+  const uri=URL.createObjectURL(await res.blob());
+  if (token!==dialogToken) {URL.revokeObjectURL(uri);return;}
+  swatchPlanData=plan;swatchCandidate=0;
+  const report=q("#swatch-report");
+  if (report.dataset.blob) URL.revokeObjectURL(report.dataset.blob);
+  report.dataset.blob=uri;
+  const sel=plan.selected;
+  report.innerHTML=`<figure class="stage">${img(uri,"Ranked cut swatch positions")}</figure>
+    <div class="metrics">
+      ${stat("Standard lamp ΔE to target",n(sel.lamps["lamp-standard"].delta_e76_to_target))}
+      ${stat("Warm lamp ΔE to target",n(sel.lamps["lamp-warm"].delta_e76_to_target))}
+      ${stat("Worst lamp",n(sel.worst_lamp_delta_e76))}
+      ${stat("Shared pixels",n(sel.coverage.common_visible_pixels,0))}
+    </div>
+    <p class="soft">Ranked by the worst of the two same-lamp ΔE values, so the chosen cut is reliable under both lights rather than good at only one.</p>
+    ${swatchCandidateRows(plan)}
+    <div class="actions">${plan.candidates.map((_,i)=>btn("Rank "+(i+1),"swatch-pick",i===0?"tiny primary":"tiny secondary",null,`data-value="${i}"`)).join("")}</div>`;
+}
+
+async function refreshSwatchOverlay() {
+  if (!swatchPlanData) return;
+  const data=formData();
+  const payload={
+    tile_id:state.tile.id,target_tile_id:data.get("target_tile_id"),
+    region_id:data.get("region_id")||null,target_region_id:data.get("target_region_id")||null,
+    width_mm:Number(data.get("width_mm")),height_mm:Number(data.get("height_mm")),
+    stride_mm:Number(data.get("stride_mm")),glare_quantile:0.9,glare_ratio:1.18,min_support_fraction:0.8,
+  };
+  const token=dialogToken;
+  const res=await request("/api/library/swatch/overlay",{method:"POST",body:{...payload,candidate:swatchCandidate}});
+  const uri=URL.createObjectURL(await res.blob());
+  if (token!==dialogToken) {URL.revokeObjectURL(uri);return;}
+  const report=q("#swatch-report");
+  if (report.dataset.blob) URL.revokeObjectURL(report.dataset.blob);
+  report.dataset.blob=uri;
+  report.querySelector("figure.stage").innerHTML=img(uri,"Ranked cut swatch positions");
+}
+
 function pairForm() {
   const ready=state.tile.photos.filter(item=>item.registered_url);
   if (ready.length<2) throw Error("Register at least two captures first.");
@@ -637,6 +780,7 @@ async function runMeasurement(data) {
   const revision=travel;
   const result=await api(tileUrl()+"/results",{method:"POST",body:{
     kind:state.tool,photo_id:data.get("photo_id")||null,comparison_id:data.get("comparison_id")||null,
+    lamp_comparison_id:data.get("lamp_comparison_id")||null,
     region_id:data.get("region_id")||null,apply_neutral:data.has("apply_neutral"),
     options:parsedOptions(data,state.config.tools[state.tool]),
   }});
@@ -700,6 +844,12 @@ async function doAction(name,target) {
     neutral:neutralForm,
     "neutral-clear":()=>patchTile("/calibration","DELETE",{},"Neutral-card balance cleared."),
     "reference-add":refForm,
+    "swatch-plan":()=>swatchPlanForm(),
+    "swatch-preview":async ()=>{await runSwatchPreview();},
+    "swatch-pick":async ()=>{
+      swatchCandidate=Number(value);
+      await refreshSwatchOverlay();
+    },
     "reference-retire":()=>{
       const ref=state.refs.find(item=>item.id===id);
       modal("Retire visual reference?",'<p>Earlier measurements keep the approved sample they used.</p>',"Retire reference",async ()=>{
@@ -810,6 +960,10 @@ document.addEventListener("input",event=>{
 });
 
 document.addEventListener("change",event=>{
+  const form=q("#measurement-form");
+  if (form && form.contains(event.target)) {
+    measureFormValues={...measureFormValues,...Object.fromEntries(new FormData(form).entries())};
+  }
   if (event.target.id==="field-kind") {
     state.tool=event.target.value;
     const existing=q("#measurement-form");
@@ -817,6 +971,10 @@ document.addEventListener("change",event=>{
     q("#field-kind")?.focus();
   }
   if (event.target.id==="field-study_kind") studyOptions(event.target.value);
+  if (event.target.id==="field-reference_id") {
+    const existing=q("#measurement-form");
+    existing.outerHTML=measureControls();
+  }
 });
 
 dialog.addEventListener("close",()=>{

@@ -30,7 +30,11 @@ ROLE_LABELS = {
     "rake-left": "Raking light from left",
     "rake-right": "Raking light from right",
     "reference": "Reference capture",
+    "lamp-standard": "Standard lamp (D50 booth)",
+    "lamp-warm": "Workshop warm lamp",
 }
+# The two signing illuminants whose fingerprints must describe one physical patch.
+LAMP_ROLES = ("lamp-standard", "lamp-warm")
 REGION_PURPOSES = {
     "inspection": "Inspection area",
     "bare": "Unprinted paper sample",
@@ -185,8 +189,50 @@ def library_fields(payload):
         "tile_id": identity(data.get("tile_id"), "Specimen ID"),
         "title": string(data.get("title"), "Reference name", maximum=100),
         "family": string(data.get("family"), "Reference series", maximum=100, required=False),
+        "color_number": string(data.get("color_number"), "Spot color number", maximum=60, required=False),
         "notes": string(data.get("notes"), "Reference notes", maximum=1200, required=False),
         "region_id": identity(data["region_id"], "Region ID") if data.get("region_id") else None,
+    }
+
+
+def swatch_plan_fields(payload):
+    data = dictionary(payload, "Swatch cut plan")
+    return {
+        "tile_id": identity(data.get("tile_id"), "Specimen ID"),
+        "target_tile_id": identity(data.get("target_tile_id"), "Target specimen ID"),
+        "region_id": identity(data["region_id"], "Search region ID") if data.get("region_id") else None,
+        "target_region_id": identity(data["target_region_id"], "Target region ID")
+        if data.get("target_region_id") else None,
+        "width_mm": scalar(data.get("width_mm", 6), "Swatch width mm", lower=2.0, upper=40.0),
+        "height_mm": scalar(data.get("height_mm", 8), "Swatch height mm", lower=2.0, upper=40.0),
+        "stride_mm": scalar(data.get("stride_mm", 1.0), "Search stride mm", lower=0.2, upper=6.0),
+        "glare_quantile": scalar(data.get("glare_quantile", 0.90), "Glare quantile", lower=0.75, upper=0.99),
+        "glare_ratio": scalar(data.get("glare_ratio", 1.18), "Glare ratio", lower=1.05, upper=2.5),
+        "min_support_fraction": scalar(
+            data.get("min_support_fraction", 0.80), "Minimum common support", lower=0.5, upper=0.98,
+        ),
+    }
+
+
+def swatch_approve_fields(payload):
+    data = dictionary(payload, "Swatch approval")
+    bounds = collection(data.get("bounds"), "Swatch bounds", minimum=4, maximum=4)
+    return {
+        "tile_id": identity(data.get("tile_id"), "Specimen ID"),
+        "target_tile_id": identity(data.get("target_tile_id"), "Target specimen ID"),
+        "title": string(data.get("title"), "Reference name", maximum=100),
+        "family": string(data.get("family"), "Reference series", maximum=100, required=False),
+        "color_number": string(data.get("color_number"), "Spot color number", maximum=60, required=False),
+        "notes": string(data.get("notes"), "Reference notes", maximum=1200, required=False),
+        "width_mm": scalar(data.get("width_mm", 6), "Swatch width mm", lower=2.0, upper=40.0),
+        "height_mm": scalar(data.get("height_mm", 8), "Swatch height mm", lower=2.0, upper=40.0),
+        "bounds": [scalar(value, "Swatch bound", lower=0.0, upper=1.0) for value in bounds],
+        "orientation": enumeration(data.get("orientation", "width-x"), ("width-x", "height-x"), "Swatch orientation"),
+        "region_id": identity(data["region_id"], "Search region ID") if data.get("region_id") else None,
+        "target_region_id": identity(data["target_region_id"], "Target region ID")
+        if data.get("target_region_id") else None,
+        "glare_quantile": scalar(data.get("glare_quantile", 0.90), "Glare quantile", lower=0.75, upper=0.99),
+        "glare_ratio": scalar(data.get("glare_ratio", 1.18), "Glare ratio", lower=1.05, upper=2.5),
     }
 
 
