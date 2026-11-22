@@ -739,6 +739,16 @@ async function doAction(name,target) {
       toast("Observation reviewed.");
       render();
     },
+    "dot-attribution":async ()=>{
+      const record=state.result;
+      const label={auto:"automatic reading",single:"one merged dot",split:"separate lattice landings"}[value];
+      state.result=await api(`/api/results/${record.id}/dot-groups/${target.dataset.group}`,{
+        method:"PUT",body:{version:record.version,disposition:value,notes:""},
+      });
+      await gatherTile();
+      toast(`Dot group ${target.dataset.group} saved as ${label}.`);
+      render();
+    },
     pin:pinForm,
     "study-add":studyForm,
     "study-open":()=>{state.study=state.studies.find(item=>item.id===id);render();},

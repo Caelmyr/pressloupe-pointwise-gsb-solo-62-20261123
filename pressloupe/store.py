@@ -320,6 +320,23 @@ class Store:
             event(conn, result["tile_id"], "review", f"Updated {edited} defect review decision(s)")
             return result
 
+    def save_dot_attribution(self, identifier, expected_version, updated):
+        with self.transaction(write=True) as conn:
+            row = conn.execute("SELECT document FROM results WHERE id=?", (identifier,)).fetchone()
+            if row is None:
+                raise MissingError("Measurement not found.")
+            record = json.loads(row["document"])
+            self.require_version(record, expected_version)
+            record = updated
+            record["version"] += 1
+            conn.execute("UPDATE results SET document=? WHERE id=?", (document(record), record["id"]))
+            group = next(iter(record.get("dot_decisions", {}).values()), None)
+            event(
+                conn, record["tile_id"], "review",
+                f"Dot attribution reviewed: {group['disposition'] if group else 'automatic'}",
+            )
+            return record
+
     def _reference(self, conn, identifier):
         chosen = identity(identifier, "Reference ID")
         row = conn.execute("SELECT document FROM library WHERE id=?", (chosen,)).fetchone()

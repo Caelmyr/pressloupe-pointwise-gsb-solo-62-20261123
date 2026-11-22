@@ -7,7 +7,8 @@ export function metricSet(record) {
   const m = record.metrics;
   const rows = {
     color: () => [["Median L*",n(m.median_lab[0])],["Within-plane p90 ΔE",n(m.delta_e_from_tile_median["90"])],["Pixels measured",n(m.pixels,0)]],
-    dots: () => [["Resolved dots",m.dot_count],["Median area (px²)",n(m.median_area_px,2)],["Resolved ink area",percent(m.ink_area_percent)]],
+    dots: () => [["Resolved dots",m.dot_count],["Median area (px²)",n(m.median_area_px,2)],["Resolved ink area",percent(m.ink_area_percent)],
+      ["Unresolved ink groups",m.unresolved_group_count??0],["Unresolved ink",percent(m.unresolved_ink_percent)]],
     coverage: () => [["Ink",percent(m.percent.glazed)],["Mount",percent(m.percent.bare)],["Mixed",percent(m.percent.mixed)],["Unmeasured",percent(m.percent.unmeasured)]],
     defects: () => {
       const reviewed = Object.values(record.decisions);
@@ -127,11 +128,53 @@ function referenceDetail(m) {
     <p class="notice">${e(m.capture_note)}</p>`;
 }
 
+function latticeFit(m) {
+  const fit = m.lattice_fit;
+  if (!fit) return `<p class="notice">No single screen placement fits the visible dot positions. Every ink group stays unresolved until the thresholds expose clear isolated dots.</p>`;
+  const rows = [
+    ["Screen pitch (px)", `${n(fit.pitch_px[0],2)} · ${n(fit.pitch_px[1],2)}`],
+    ["Screen angle", `${n(fit.angle_deg,1)}°`],
+    ["Anchor components", fit.anchor_components],
+    ["Placement fit RMS (px)", n(fit.fit_rms_px,3)],
+    ["Alternative placement RMS (px)", n(fit.second_placement_rms_px,3)],
+  ];
+  const warning = fit.ambiguous_placement
+    ? `<p class="notice">Two screen placements explain the photographed pinhole positions almost equally. The lower-residual placement is in use; verify it against the pinhole cross before counting squeezed pairs.</p>` : "";
+  return `<details><summary>Fitted screen placement</summary>${table(["Property","Value"],rows)}${warning}</details>`;
+}
+
+function attributionActions(group) {
+  return group.available_actions.map(action => {
+    const label = {auto:"Automatic",single:"Read as one dot",split:"Split into real landings"}[action];
+    const style = action==="split" ? "tiny primary" : "tiny ghost";
+    return btn(label,"dot-attribution",style,null,`data-group="${e(group.group)}" data-value="${action}"`);
+  }).join("");
+}
+
+function dotsDetail(record) {
+  const m = record.metrics;
+  const lattice = latticeFit(m);
+  const unresolved = m.unresolved_groups || [];
+  const listing = unresolved.length
+    ? `<details open><summary>Unresolved ink groups (${unresolved.length})</summary>
+       <p class="plot-note">Amber ink is not counted. Re-read a group after the magnified review; footprints always follow the photographed ink, never paper white.</p>
+       <div class="divider-list scroll-list">${unresolved.map(group=>`<div class="row"><div class="grow">
+         <strong>${e(group.group)}</strong> · ${n(group.pixels,0)} px · ${group.site_count} lattice site${group.site_count===1?"":"s"}
+         ${group.touches_boundary?badge("Boundary","caution"):""}<br><small>${e(group.reason)}</small></div>
+         <div class="actions">${attributionActions(group)}</div></div>`).join("")}</div></details>`
+    : `<p class="notice">Every detected ink pixel is attributed to a counted footprint.</p>`;
+  const manual = (m.manually_attributed_groups||[]).length
+    ? `<p class="plot-note">Manually attributed groups: ${m.manually_attributed_groups.map(e).join(", ")}</p>` : "";
+  return `<h3>Screen-lattice ink footprints</h3><p class="plot-note">${e(m.note)}</p>${lattice}${manual}${listing}
+    <details><summary>Dot table (${m.rows.length}${m.table_truncated?", first 600":""})</summary>
+    ${table(["Dot","Group","Site","Origin","Area (px²)","Area (mm²)","Major/minor","Angle (°)","Center"],m.rows.map(r=>[
+      r.dot, r.group, r.site==null?"—":r.site.join(","), r.origin, n(r.area_px,0), n(r.area_mm2,5), n(r.axis_ratio,2), n(r.major_angle_deg,1), r.center.map(v=>n(v,4)).join(", ")
+    ]))}</details>`;
+}
+
 function details(record) {
   const render = {
-    dots:m=>`<h3>Isolated ink dots</h3><p class="plot-note">${e(m.note)}</p>${table(["Dot","Area (px²)","Area (mm²)","Major/minor","Angle (°)"],m.rows.map(r=>[
-      r.dot, n(r.area_px,0), n(r.area_mm2,5), n(r.axis_ratio,2), n(r.major_angle_deg,1)
-    ]))}`,
+    dots: dotsDetail,
     color:colorDetail,coverage:coverageDetail,defects:defectsDetail,glare:glareDetail,
     direction:directionDetail,texture:textureDetail,profile:profileDetail,reference:referenceDetail,craze:crazeDetail,rim:rimDetail,
     marking:markingDetail,joint:jointDetail,aggregate:aggregateDetail,blade:bladeDetail,

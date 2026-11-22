@@ -8,6 +8,7 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .analysis import approve_reference, evaluate
 from .demo import load_training, preview_photo
+from .dotcensus import dot_group_catalog, save_dot_review
 from .evidence import (
     artifact_json,
     create_evidence,
@@ -283,6 +284,18 @@ def register_measurements(api, store, heavy):
         choices = parse_reviews(data)
         with heavy:
             record = save_reviews(store, measurement_id, model_version(data), choices)
+        return jsonify(record)
+
+    @api.get("/results/<measurement_id>/dot-groups")
+    def dot_groups(measurement_id):
+        return jsonify(dot_group_catalog(store.result(measurement_id)))
+
+    @api.put("/results/<measurement_id>/dot-groups/<group_id>")
+    def dot_group_review(measurement_id, group_id):
+        data = json_request()
+        data["group"] = group_id
+        with heavy:
+            record = save_dot_review(store, measurement_id, data)
         return jsonify(record)
 
     @api.get("/library")

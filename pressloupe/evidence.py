@@ -39,6 +39,7 @@ def csv_cell(value):
 def result_metrics_table(record):
     kind = record["kind"]
     metrics = record["metrics"]
+    rows_data = metrics.get("rows", [])
     if kind == "profile":
         columns = (
             "position", "position_unit", "relative_position", "samples", "lightness", "a", "b", "intensity",
@@ -98,8 +99,13 @@ def result_metrics_table(record):
         columns = ("unit", *fields)
         rows = ([metrics["unit"], *(item[key] for key in fields)] for item in metrics["stations"])
     elif kind == "dots":
-        columns = ("dot", "area_px", "area_mm2", "axis_ratio", "major_angle_deg", "center")
-        rows = ([item[key] for key in columns] for item in metrics["rows"])
+        if rows_data and isinstance(rows_data[0], dict) and "group" in rows_data[0]:
+            columns = ("dot", "group", "site", "origin", "area_px", "area_mm2",
+                       "axis_ratio", "major_angle_deg", "center")
+            rows = ([item.get(key) for key in columns] for item in rows_data)
+        else:
+            columns = ("dot", "area_px", "area_mm2", "axis_ratio", "major_angle_deg", "center")
+            rows = ([item[key] for key in columns] for item in rows_data)
     elif kind == "blade":
         fields = ("position", "center", "state", "width", "endpoints")
         columns = ("unit", *fields)
@@ -287,7 +293,7 @@ def evidence_zip(store, entry):
 def summarize_result(record):
     metrics = {
         "color": ("median_lab", "swatch", "delta_e_from_tile_median"),
-        "dots": ("dot_count", "median_area_px", "ink_area_percent", "unresolved_ink_percent"),
+        "dots": ("dot_count", "median_area_px", "ink_area_percent", "unresolved_ink_percent", "unresolved_group_count"),
         "coverage": ("percent", "measured"),
         "defects": ("total_observations", "reported_observations"),
         "glare": ("strong_glare_percent", "hotspot_count"),
@@ -306,7 +312,7 @@ def summarize_result(record):
         "id", "kind", "label", "tile_id", "source_version", "created_at", "version", "basis",
     )}
     summary["tile_name"] = record["provenance"]["specimen"]["name"]
-    summary["brief"] = {key: record["metrics"][key] for key in metrics}
+    summary["brief"] = {key: record["metrics"].get(key) for key in metrics}
     summary["overlay_url"] = f"/api/results/{record['id']}/image/overlay"
     return summary
 

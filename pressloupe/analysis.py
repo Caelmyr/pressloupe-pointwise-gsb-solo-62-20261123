@@ -29,12 +29,12 @@ from .lighting import measure_direction, measure_glare
 from .model import ANALYSIS_LABELS, InputError, library_fields
 from .parameters import TOOLS, analysis_parameters
 from .profile import measure_profile
-from .dots import measure_dots
+from .dotcensus import run_dot_census
 from .store import key_for
 from .texture import measure_texture
 
 
-ANALYZER_VERSION = 2
+ANALYZER_VERSION = 3
 
 
 def selected_capture(tile, explicit, expected_role=None):
@@ -177,7 +177,7 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
     options = params["options"]
     support = analysis_mask(frame, area, allow_clipped=False)
     if kind == "dots":
-        metrics, image = measure_dots(frame, area, linear, options)
+        metrics, image, _groups = run_dot_census(store, frame, area, options)
         return metrics, image, None
     if kind == "blade":
         metrics, image = blade_width(tile, frame, area, linear, options)
