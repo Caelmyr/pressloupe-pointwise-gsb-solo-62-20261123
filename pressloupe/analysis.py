@@ -34,7 +34,7 @@ from .store import key_for
 from .texture import measure_texture
 
 
-ANALYZER_VERSION = 2
+ANALYZER_VERSION = 3
 
 
 def selected_capture(tile, explicit, expected_role=None):
@@ -145,7 +145,16 @@ def resolve_parameters(store, tile, payload):
             raise InputError("The selected reference has been retired.")
     if kind == "defects" and params["options"]["maximum_area"] <= params["options"]["minimum_area"]:
         raise InputError("Maximum spot size must exceed the minimum.")
-    return params, reference
+    if kind == "blade" and params["options"].get("prior_id"):
+        prior = store.result(params["options"]["prior_id"])
+        if prior["kind"] != "blade" or prior["tile_id"] != tile["id"]:
+            raise InputError("Repeat a stored control strip profile from this specimen.")
+        if prior["metrics"].get("mode") != "follow":
+            raise InputError("Choose an original strip trace as the stored profile, not an earlier repeat.")
+        if prior["provenance"]["photo"]["id"] == params["photo_id"]:
+            raise InputError("Repeat the strip on a different registered capture than the stored profile.")
+        return params, reference, prior
+    return params, reference, None
 
 
 def theoretical_legend(kind, scale=None):
@@ -172,7 +181,7 @@ def formula_scale(values, support, floor):
     return max(float(np.quantile(available, 0.97)), floor) if len(available) else floor
 
 
-def compute_single(store, tile, frame, region, area, linear, correction, params, reference):
+def compute_single(store, tile, frame, region, area, linear, correction, params, reference, prior=None):
     kind = params["kind"]
     options = params["options"]
     support = analysis_mask(frame, area, allow_clipped=False)
@@ -180,8 +189,8 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
         metrics, image = measure_dots(frame, area, linear, options)
         return metrics, image, None
     if kind == "blade":
-        metrics, image = blade_width(tile, frame, area, linear, options)
-        return metrics, image, None
+        metrics, image, legend = blade_width(tile, frame, area, linear, options, prior)
+        return metrics, image, legend
     if kind in {"marking", "joint", "aggregate"}:
         operation = {"marking": scan_marking, "joint": survey_joint, "aggregate": aggregate_candidates}[kind]
         metrics, image = operation(frame, area, linear, options)
@@ -255,7 +264,7 @@ def result_key(tile, params, reference):
 
 def evaluate(store, tile_id, payload):
     tile = store.tile(tile_id)
-    params, reference = resolve_parameters(store, tile, payload)
+    params, reference, prior = resolve_parameters(store, tile, payload)
     cache_key = result_key(tile, params, reference)
     cached = store.get_cached_result(cache_key)
     if cached:
@@ -270,7 +279,7 @@ def evaluate(store, tile_id, payload):
         metrics, picture, legend = compute_pair(tile, frame, pair, area, params)
     else:
         linear, correction = corrected_linear(tile, frame, params["apply_neutral"])
-        metrics, picture, legend = compute_single(store, tile, frame, region, area, linear, correction, params, reference)
+        metrics, picture, legend = compute_single(store, tile, frame, region, area, linear, correction, params, reference, prior)
     result = {
         "tile_id": tile_id,
         "source_version": tile["version"],

@@ -106,14 +106,15 @@ TOOLS = {
     },
     "blade": {
         "label": "Control strip width",
-        "description": "Measure supported printed strip cross-sections along two marked points.",
+        "description": "Follow one printed strip from a seen head to its tail. Leave the stored profile empty to trace a new strip, or choose one to repeat its cross-section positions.",
         "fields": {
-            "start": {"kind": "point", "label": "Base end", "default": [.20, .733]},
-            "end": {"kind": "point", "label": "Tip end", "default": [.80, .733]},
-            "stations": {"kind": "integer", "label": "Cross-sections", "default": 24, "min": 5, "max": 150},
+            "start": {"kind": "point", "label": "Seen head", "default": [.20, .733]},
+            "end": {"kind": "point", "label": "Expected tail", "default": [.80, .733]},
+            "stations": {"kind": "integer", "label": "Cross-sections", "default": 32, "min": 5, "max": 150},
             "half_band": {"kind": "number", "label": "Cross-section reach", "default": .30, "min": .05, "max": .45, "step": .01},
             "bare_region": {"kind": "region", "purpose": "bare", "label": "Unprinted paper sample", "default": None},
             "glazed_region": {"kind": "region", "purpose": "glazed", "label": "Printed stock sample", "default": None},
+            "prior_id": {"kind": "result", "label": "Repeat a stored profile", "default": None},
         },
     },
     "reference": {
@@ -162,6 +163,8 @@ def parsed_option(key, field, raw):
         return identity(raw, label) if raw else None
     if kind == "reference":
         return identity(raw, label)
+    if kind == "result":
+        return identity(raw, label) if raw else None
     raise RuntimeError(f"Unknown measurement option {key}.")
 
 

@@ -133,6 +133,7 @@ function optionInput(key,item) {
   if (kind==="flag") return checkField(label,key,value);
   if (kind==="region") return selectField(label,key,option("","Auto / current area","")+state.tile.regions.filter(record=>item.purpose?record.purpose===item.purpose:record.purpose!=="ignore").map(record=>option(record.id,record.name)).join(""));
   if (kind==="reference") return selectField(label,key,option("","Choose a reference","")+state.refs.map(record=>option(record.id,record.title)).join(""));
+  if (kind==="result") return selectField(label,key,option("","Trace a new strip","")+state.results.filter(record=>record.kind==="blade"&&record.brief.mode==="follow").map(record=>option(record.id,`${date(record.created_at)} · ${n(record.brief.median_width)} ${record.brief.length_unit}`)).join(""));
   if (kind==="point") return `<div class="field"><span>${e(label)} (X, Y)</span><div class="point-group">
     ${value.map((coordinate,index)=>`<input name="${key}-${index}" aria-label="${e(label)} ${index===0?"X":"Y"}" type="number" min="0" max="1" step=".001" value="${coordinate}">`).join("")}</div></div>`;
   return "";

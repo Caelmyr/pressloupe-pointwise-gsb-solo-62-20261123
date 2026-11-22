@@ -101,9 +101,16 @@ def result_metrics_table(record):
         columns = ("dot", "area_px", "area_mm2", "axis_ratio", "major_angle_deg", "center")
         rows = ([item[key] for key in columns] for item in metrics["rows"])
     elif kind == "blade":
-        fields = ("position", "center", "state", "width", "endpoints")
-        columns = ("unit", *fields)
-        rows = ([metrics["length_unit"], *(item[key] for key in fields)] for item in metrics["stations"])
+        metrics = record["metrics"]
+        if metrics.get("mode") == "repeat":
+            fields = ("position", "old_left", "new_left", "left_shift", "old_right", "new_right",
+                      "right_shift", "old_width", "new_width", "width_change", "translation", "state", "verdict")
+            columns = ("unit", *fields)
+            rows = ([metrics["length_unit"], *(item.get(key) for key in fields)] for item in metrics["stations"])
+        else:
+            fields = ("position", "center", "left_edge", "right_edge", "width", "state", "side_missing")
+            columns = ("unit", *fields)
+            rows = ([metrics["length_unit"], *(item.get(key) for key in fields)] for item in metrics["stations"])
     elif kind == "aggregate":
         fields = ("rank", "registered_pixels", "normalized_center", "contrast", "bounding_width", "bounding_height")
         columns = ("unit", *fields)
@@ -299,14 +306,14 @@ def summarize_result(record):
         "direction": ("left_strong_percent", "right_strong_percent"),
         "marking": ("observed_percent", "midrib_percent_of_observed", "stations"),
         "joint": ("measured_stations", "unmeasured_stations", "median_absolute_step"),
-        "blade": ("axis_length", "maximum_width", "observed_stations"),
+        "blade": ("axis_length", "median_width", "observed_stations", "mode", "length_unit"),
         "aggregate": ("candidate_clusters", "observed_pixels", "bright_fraction_of_support"),
     }[record["kind"]]
     summary = {key: record[key] for key in (
         "id", "kind", "label", "tile_id", "source_version", "created_at", "version", "basis",
     )}
     summary["tile_name"] = record["provenance"]["specimen"]["name"]
-    summary["brief"] = {key: record["metrics"][key] for key in metrics}
+    summary["brief"] = {key: record["metrics"].get(key) for key in metrics}
     summary["overlay_url"] = f"/api/results/{record['id']}/image/overlay"
     return summary
 

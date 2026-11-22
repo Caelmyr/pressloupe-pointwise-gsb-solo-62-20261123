@@ -22,7 +22,9 @@ export function metricSet(record) {
     reference: () => [["Specimen to reference ΔE",n(m.delta_e76)],["Lightness difference",n(m.delta_lab[0])],["Dispersion difference",n(m.dispersion_delta)]],
     marking: () => [["Measured stations",percent(m.observed_percent)],["Rule among measured",percent(m.midrib_percent_of_observed)],["Runs",m.runs.length]],
     joint: () => [["Measured stations",m.measured_stations],["Unmeasured stations",m.unmeasured_stations],["Median absolute contrast",n(m.median_absolute_step,4)]],
-    blade: () => [["Marked axis",`${n(m.axis_length)} ${m.length_unit}`],["Largest visible width",m.maximum_width==null?"—":`${n(m.maximum_width)} ${m.length_unit}`],["Supported sections",`${m.observed_stations}/${m.requested_stations}`]],
+    blade: () => m.mode === "repeat"
+      ? [["Stored profile",`${n(m.prior?.stations,0)} sections`],["Comparable sections",`${m.comparable_stations}/${m.requested_stations}`],["Shifted, width unchanged",n(m.shifted_without_width_change,0)],["Median width change",m.median_width_change==null?"—":`${n(m.median_width_change)} ${m.length_unit}`]]
+      : [["Marked head to tail",`${n(m.axis_length)} ${m.length_unit}`],["Median visible width",m.median_width==null?"—":`${n(m.median_width)} ${m.length_unit}`],["Both edges seen",`${m.both_edges_stations}/${m.requested_stations}`]],
     aggregate: () => [["Bright clusters",m.candidate_clusters],["Supported pixels",m.observed_pixels],["Bright fraction",percent(m.bright_fraction_of_support)]],
   }[record.kind]();
   return `<div class="metrics">${rows.map(([name,value])=>stat(name,value)).join("")}</div>`;
@@ -68,10 +70,21 @@ function aggregateDetail(m) {
 }
 
 function bladeDetail(m) {
-  const columns=[`Distance (${m.length_unit})`,`Width (${m.length_unit})`,"Cross-section support"];
-  const rows=m.stations.map(station=>[n(station.position,2),n(station.width,2),station.state]);
-  return `<h3>Control strip widths</h3><p>${e(m.note)}</p>
-    ${plot([{values:m.stations.map(station=>station.width)}],"Width along the marked axis")}
+  if (m.mode === "repeat") {
+    const columns=[`Position (${m.length_unit})`,"Left shift","Right shift","Width change","Translation","Verdict","State"];
+    const rows=m.stations.map(row=>[n(row.position,2),n(row.left_shift,2),n(row.right_shift,2),n(row.width_change,2),n(row.translation,2),row.verdict,row.state]);
+    return `<h3>Repeat against the stored profile</h3><p>${e(m.note)}</p>
+      ${plot([{values:m.stations.map(row=>row.width_change),color:"#b26a4a"},{values:m.stations.map(row=>row.translation),color:"#58836b"}],"Width change and shift along the strip")}
+      <div class="legend"><span>Width change (coral) and whole-strip shift (green)</span></div>
+      <details><summary>Cross-section comparison</summary>${table(columns,rows)}</details>`;
+  }
+  const columns=[`Position (${m.length_unit})`,`Left edge`,`Right edge`,`Width (${m.length_unit})`,"Condition","Unseen side"];
+  const rows=m.stations.map(row=>[n(row.position,2),n(row.left_edge,2),n(row.right_edge,2),n(row.width,2),row.state,row.side_missing||"—"]);
+  const gaps=m.unseen_stretches?.length
+    ? `<p class="notice">No width was read at ${m.unseen_stretches.map(gap=>`${gap.stations} ${gap.stations===1?"section":"sections"} (${gap.first_position}–${gap.last_position} ${m.length_unit})`).join(", ")}.</p>`
+    : "";
+  return `<h3>Control strip widths</h3><p>${e(m.note)}</p>${gaps}${m.caution?`<p class="notice">${e(m.caution)}</p>`:""}
+    ${plot([{values:m.stations.map(row=>row.width)}],"Width where both edges are visible")}
     <details><summary>Cross-section readings</summary>${table(columns,rows)}</details>`;
 }
 
