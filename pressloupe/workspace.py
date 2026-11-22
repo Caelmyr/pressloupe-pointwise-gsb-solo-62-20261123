@@ -26,6 +26,7 @@ from .model import (
     tile_fields,
 )
 from .photos import diagnostic_flags, store_capture
+from .showthrough import run_showthrough
 from .store import make_id
 
 
@@ -291,3 +292,51 @@ def clear_calibration(store, identifier, payload):
         tile["calibration"] = None
 
     return store.edit_tile(identifier, expected, change, "calibration", "Cleared neutral-card image gains")
+
+
+def _registered_photo(tile, photo_id, label):
+    photo = match_slot(tile["photos"], identity(photo_id, label), "photo")
+    plane = tile.get("plane")
+    registered = {plane["photo_id"], *tile.get("registrations", {})} if plane else set()
+    if photo["id"] not in registered:
+        raise InputError(f"Register the {label.lower()} in the specimen plane before aligning show-through.")
+    return photo
+
+
+def preview_showthrough(store, identifier, payload):
+    dictionary(payload, "Show-through preview")
+    tile = store.tile(identifier)
+    _registered_photo(tile, payload.get("front_photo_id"), "Front photo ID")
+    _registered_photo(tile, payload.get("back_photo_id"), "Back photo ID")
+    record, _, _ = run_showthrough(store.blobs, tile, payload)
+    return record
+
+
+def save_showthrough(store, identifier, payload):
+    dictionary(payload, "Show-through alignment")
+    expected = model_version(payload)
+    tile = store.tile(identifier)
+    store.require_version(tile, expected)
+    _registered_photo(tile, payload.get("front_photo_id"), "Front photo ID")
+    _registered_photo(tile, payload.get("back_photo_id"), "Back photo ID")
+    record, _, _ = run_showthrough(store.blobs, tile, payload)
+
+    def change(live):
+        live["showthrough"] = record
+
+    saved = store.edit_tile(
+        identifier, expected, change, "show-through",
+        "Retained a whole-plane back-side show-through alignment",
+    )
+    return saved, record
+
+
+def clear_showthrough(store, identifier, payload):
+    expected = model_version(payload)
+
+    def change(tile):
+        tile.pop("showthrough", None)
+
+    return store.edit_tile(
+        identifier, expected, change, "show-through", "Cleared the retained show-through alignment"
+    )

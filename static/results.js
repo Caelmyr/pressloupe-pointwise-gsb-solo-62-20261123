@@ -8,7 +8,16 @@ export function metricSet(record) {
   const rows = {
     color: () => [["Median L*",n(m.median_lab[0])],["Within-plane p90 ΔE",n(m.delta_e_from_tile_median["90"])],["Pixels measured",n(m.pixels,0)]],
     dots: () => [["Resolved dots",m.dot_count],["Median area (px²)",n(m.median_area_px,2)],["Resolved ink area",percent(m.ink_area_percent)]],
-    coverage: () => [["Ink",percent(m.percent.glazed)],["Mount",percent(m.percent.bare)],["Mixed",percent(m.percent.mixed)],["Unmeasured",percent(m.percent.unmeasured)]],
+    coverage: () => {
+      const st=m.show_through_coverage;
+      const base=[["Ink",percent(m.percent.glazed)],["Mount",percent(m.percent.bare)],["Mixed",percent(m.percent.mixed)],["Unmeasured",percent(m.percent.unmeasured)]];
+      if (st) base.push(
+        ["Front-ink lower bound",percent(st.front_ink_lower_percent)],
+        ["Front-ink upper bound",percent(st.front_ink_upper_percent)],
+        ["Show-through excluded",percent(st.excluded_show_through_percent)],
+      );
+      return base;
+    },
     defects: () => {
       const reviewed = Object.values(record.decisions);
       return [["Observed",m.total_observations],["Confirmed",reviewed.filter(item=>item.decision==="confirm").length],["Dismissed",reviewed.filter(item=>item.decision==="dismiss").length]];
@@ -44,8 +53,17 @@ function colorDetail(m) {
 
 function coverageDetail(m) {
   const series = ["glazed","mixed","bare"].map((topic,index)=>({values:m.depth_bands.map(item=>item.percent[topic]),color:colors[index]}));
+  const st=m.show_through_coverage;
   return `<h3>Coverage across the tray</h3>${plot(series,"Coverage from top to bottom",{min:0,max:100})}
-  ${table(["Depth band","Ink","Mixed","Mount","Unmeasured"],m.depth_bands.map(item=>[`${n(item.relative_top*100,0)}–${n(item.relative_bottom*100,0)}%`,...["glazed","mixed","bare","unmeasured"].map(key=>percent(item.percent[key]))]))}`;
+  ${table(["Depth band","Ink","Mixed","Mount","Unmeasured"],m.depth_bands.map(item=>[`${n(item.relative_top*100,0)}–${n(item.relative_bottom*100,0)}%`,...["glazed","mixed","bare","unmeasured"].map(key=>percent(item.percent[key]))]))}
+  ${st?`<h3>Two-sided front-ink bounds</h3><p class="plot-note">${e(st.note)}</p>
+    ${table(["Measure","Pixels","Percent","Area mm²"],[
+      ["Common paper support",n(st.common_support_px,0),"100%","—"],
+      ["Confirmed show-through (not front ink)",n(st.confirmed_show_through_px,0),percent(st.excluded_show_through_percent),"—"],
+      ["Ambiguous (ink or bleed)",n(st.ambiguous_px,0),"—","—"],
+      ["Front ink lower bound",n(st.confident_front_ink_px,0),percent(st.front_ink_lower_percent),n(st.front_ink_lower_mm2,3)],
+      ["Front ink upper bound",n(st.confident_front_ink_px+st.ambiguous_px,0),percent(st.front_ink_upper_percent),n(st.front_ink_upper_mm2,3)],
+    ])}`:""}`;
 }
 
 function markingDetail(m) {

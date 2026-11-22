@@ -49,16 +49,19 @@ from .study import create_study, public_metrics
 from .workspace import (
     calibrate,
     clear_calibration,
+    clear_showthrough,
     edit_photo,
     edit_specimen,
     import_photo,
     present_tile,
+    preview_showthrough,
     preview_transform,
     remove_photo,
     remove_region,
     save_plane,
     save_region,
     save_registration,
+    save_showthrough,
     summarize_tile,
 )
 
@@ -232,6 +235,37 @@ def register_specimens(api, store, heavy):
     @api.delete("/specimens/<specimen_id>/calibration")
     def calibration_remove(specimen_id):
         return jsonify(present_tile(clear_calibration(store, specimen_id, json_request())))
+
+    @api.post("/specimens/<specimen_id>/show-through/preview")
+    def show_through_preview(specimen_id):
+        with heavy:
+            record = preview_showthrough(store, specimen_id, json_request())
+        return jsonify(record)
+
+    @api.post("/specimens/<specimen_id>/show-through/preview/overlay")
+    def show_through_preview_overlay(specimen_id):
+        with heavy:
+            record = preview_showthrough(store, specimen_id, json_request())
+        return png_blob(store, record["overlay_digest"])
+
+    @api.put("/specimens/<specimen_id>/show-through")
+    def show_through_save(specimen_id):
+        with heavy:
+            specimen, record = save_showthrough(store, specimen_id, json_request())
+        response = jsonify({"specimen": present_tile(specimen), "alignment": record})
+        return response, 201
+
+    @api.delete("/specimens/<specimen_id>/show-through")
+    def show_through_clear(specimen_id):
+        return jsonify(present_tile(clear_showthrough(store, specimen_id, json_request())))
+
+    @api.get("/specimens/<specimen_id>/show-through/overlay")
+    def show_through_overlay(specimen_id):
+        tile = store.tile(specimen_id)
+        alignment = tile.get("showthrough")
+        if not alignment:
+            raise MissingError("Retain a show-through alignment before opening its overlay.")
+        return png_blob(store, alignment["overlay_digest"])
 
 
 def register_measurements(api, store, heavy):

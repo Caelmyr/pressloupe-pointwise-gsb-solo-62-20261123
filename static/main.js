@@ -1,7 +1,7 @@
 import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",showFront:null,showBack:null,showLeft:null,showRight:null,showPreview:null};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -10,7 +10,7 @@ const nav=[
   ["received","Received evidence","archive"],
 ];
 const tabs=[
-  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
+  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["showthrough","Show-through","compare"],["measure","Measure","measure"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
 ];
 const tileUrl=()=>`/api/specimens/${state.tile.id}`;
 const tileData=extra=>({version:state.tile.version,...extra});
@@ -208,6 +208,136 @@ function receivedPage() {
     <div class="grid-detail">${view}<section class="card"><h3>Received packets</h3><div class="divider-list">${items.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(date(item.imported_at))}</small></div>${btn("Open","received-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No received packets.</p>"}</div></section></div>`;
 }
 
+function showthroughPage() {
+  const tile=state.tile;
+  const ready=tile.photos.filter(item=>item.registered_url);
+  const saved=tile.showthrough;
+  const frontId=state.showFront||saved?.front_photo_id;
+  const backId=state.showBack||saved?.back_photo_id;
+  const front=ready.find(item=>item.id===frontId)||ready.find(item=>item.registration_state==="base")||ready[0];
+  const back=ready.find(item=>item.id===backId)||ready.find(item=>item.id!==front?.id)||null;
+  if (ready.length<2) {
+    return `<section class="card stack">${empty("Register both the front and the back photograph on the specimen plane before aligning show-through.",btn("Add photo","photo-add","primary","plus"))}</section>`;
+  }
+  const p=saved?.parameters||{};
+  const edges=[["left","Left edge flip"],["right","Right edge flip"],["top","Top edge flip"],["bottom","Bottom edge flip"]];
+  const anchorHint=`Bleed anchor ${state.showLeft?state.showLeft.length:0} points · front-only anchor ${state.showRight?state.showRight.length:0} points.`;
+  const retained = saved ? `<section class="card stack"><div class="title-row"><h3>Retained alignment</h3>${badge("Whole-plane","ready")}</div>
+      <div class="metrics">
+        ${stat("Translation dy, dx",`${saved.translation_px[0]}, ${saved.translation_px[1]} px`)}
+        ${stat("Confirmed bleed px",n(saved.coverage_bounds.confirmed_show_through_px,0))}
+        ${stat("Ambiguous fringe px",n(saved.coverage_bounds.ambiguous_px,0))}
+        ${stat("Front-ink lower",percent(saved.coverage_bounds.front_ink_lower_percent))}
+        ${stat("Front-ink upper",percent(saved.coverage_bounds.front_ink_upper_percent))}
+      </div>
+      <figure class="stage">${img(`/api/specimens/${tile.id}/show-through/overlay?v=${tile.version}`,"Retained show-through overlay")}</figure>
+      <div class="divider-list">${saved.anchors.map(a=>`<div class="row"><div class="grow"><strong>${a.anchor==="show_through"?"Known bleed anchor":"Front-only anchor"}</strong><br>
+        <small>Front dark ${n(a.front_dark_px,0)} px · explained ${percent(a.dark_explained_percent)} · unexplained ${n(a.dark_unexplained_px,0)} px · paper white kept ${n(a.paper_white_kept_px,0)} px</small></div></div>`).join("")}</div>
+      <p class="soft">${e(saved.coverage_bounds.note)}</p>
+      <div class="actions">${btn("Clear retained alignment","showthrough-clear","ghost","x")}</div></section>` : "";
+  return `<div class="grid-detail"><div class="stack">
+    <section class="card stack"><h3>Back-side show-through</h3>
+      <p class="soft">Flip the full back plate around the edge the sheet turns on, then move it with one whole-plane translation. The left anchor is known bleed-through; the right anchor is front-only work that must stay ink.</p>
+      <div class="form-columns">
+        ${selectField("Front photograph","show_front",ready.map(item=>option(item.id,item.role_label+" · "+item.name,front?.id)).join(""))}
+        ${selectField("Back photograph","show_back",ready.map(item=>option(item.id,item.role_label+" · "+item.name,back?.id)).join(""))}
+        ${selectField("Flip edge","show_flip",edges.map(([v,l])=>option(v,l,saved?.flip_edge||"left")).join(""))}
+        ${numField("Back plate radius","show_back_radius",p.back_radius??3,1,12,1)}
+        ${numField("Back plate contrast","show_back_contrast",p.back_contrast??0.16,0.03,0.8,0.01)}
+        ${numField("Front mark radius","show_front_radius",p.front_radius??3,1,12,1)}
+        ${numField("Front mark contrast","show_front_contrast",p.front_contrast??0.05,0.03,0.8,0.01)}
+        ${numField("Front-anchor protection","show_penalty",p.protect_penalty??1.0,0,8,0.1)}
+      </div>
+      <div class="actions">
+        ${btn("Draw known-bleed anchor (left)","showthrough-anchor-left","secondary","frame")}
+        ${btn("Draw front-only anchor (right)","showthrough-anchor-right","secondary","frame")}
+      </div>
+      <p class="soft" id="show-anchor-hint">${anchorHint} Two anchors are required, drawn on the registered front plane.</p>
+      <div class="actions">${btn("Preview alignment","showthrough-preview","primary","compare")}${btn("Retain alignment","showthrough-save","secondary","check")}</div>
+      <div id="showthrough-preview"></div>
+    </section></div>
+    <div class="stack">${retained}<section class="card stack"><h3>How attribution works</h3>
+      <p class="soft">Teal marks are front darkening with a real back-plate stroke behind it — confirmed show-through, excluded from front ink. Amber is a fringe pixel explainable either way, kept inside the upper coverage bound. Paper white inside an anchor is never counted, and the front-only anchor reports any hairline the plate would wrongly cover.</p></section></div>
+  </div>`;
+}
+
+function showthroughPayload(tile) {
+  const form=q("#dialog-form")||document;
+  const value=(name,fallback)=>{const el=form.querySelector(`[name="${name}"]`);return el?Number(el.value):fallback;};
+  const frontEl=document.querySelector('[name="show_front"]');
+  const backEl=document.querySelector('[name="show_back"]');
+  const flipEl=document.querySelector('[name="show_flip"]');
+  return {
+    front_photo_id:frontEl?frontEl.value:tile.showthrough.front_photo_id,
+    back_photo_id:backEl?backEl.value:tile.showthrough.back_photo_id,
+    flip_edge:flipEl?flipEl.value:tile.showthrough.flip_edge,
+    back_radius:value("show_back_radius",3),
+    back_contrast:value("show_back_contrast",.16),
+    front_radius:value("show_front_radius",3),
+    front_contrast:value("show_front_contrast",.05),
+    protect_penalty:value("show_penalty",1),
+    left_anchor:state.showLeft,
+    right_anchor:state.showRight,
+  };
+}
+
+function showthroughAnchorForm(which) {
+  const tile=state.tile;
+  const base=tile.photos.find(item=>item.registration_state==="base");
+  if (!base) throw Error("Set a base capture before drawing an anchor.");
+  const existing=which==="left"?state.showLeft:state.showRight;
+  modal(which==="left"?"Draw known-bleed anchor":"Draw front-only anchor",
+    `<p class="notice">Click around the ${which==="left"?"small back-side character that bleeds through":"front hairline that must remain front ink"}. Use at least three points.</p>
+    ${drawing(base.registered_url,"Specimen plane for anchor drawing")}
+    <div class="actions">${btn("Clear points","draw-clear","tiny secondary")}${btn("Undo point","draw-undo","tiny ghost")}<span class="soft" id="draw-count"></span></div>`,
+    "Use anchor",async ()=>{
+      if (drawPoints.length<3) throw Error("Mark at least three points to close the anchor.");
+      if (which==="left") state.showLeft=drawPoints.map(p=>[...p]); else state.showRight=drawPoints.map(p=>[...p]);
+      commitModal();
+      const hint=q("#show-anchor-hint");
+      if (hint) hint.textContent=`Bleed anchor ${state.showLeft?state.showLeft.length:0} points · front-only anchor ${state.showRight?state.showRight.length:0} points.`;
+      toast("Anchor marked. Preview the alignment when both anchors are set.");
+    },true);
+  prepareDrawing(existing||[],40);
+}
+
+async function showthroughPreview(persist) {
+  const tile=state.tile;
+  if (!state.showLeft||!state.showRight) throw Error("Draw both the bleed anchor and the front-only anchor first.");
+  const body=showthroughPayload(tile);
+  if (persist) body.version=tile.version;
+  const url=tileUrl()+"/show-through"+(persist?"":"/preview");
+  const record=await api(url,{method:persist?"PUT":"POST",body});
+  if (persist) {
+    state.tile=record.specimen;
+    state.showLeft=record.alignment.left_anchor;
+    state.showRight=record.alignment.right_anchor;
+    await gatherTile();
+    toast("Show-through alignment retained.");
+    render();
+    return record.alignment;
+  }
+  state.showPreview=record;
+  const box=q("#showthrough-preview");
+  if (box) {
+    const overlayRes=await request(tileUrl()+"/show-through/preview/overlay",{method:"POST",body});
+    const uri=URL.createObjectURL(await overlayRes.blob());
+    box.innerHTML=`<figure class="stage" data-blob="${uri}">${img(uri,"Show-through preview overlay")}</figure>
+    <div class="metrics">
+      ${stat("Translation dy, dx",`${record.translation_px[0]}, ${record.translation_px[1]} px`)}
+      ${stat("Confirmed bleed px",n(record.coverage_bounds.confirmed_show_through_px,0))}
+      ${stat("Ambiguous px",n(record.coverage_bounds.ambiguous_px,0))}
+      ${stat("Front-ink lower",percent(record.coverage_bounds.front_ink_lower_percent))}
+      ${stat("Front-ink upper",percent(record.coverage_bounds.front_ink_upper_percent))}
+    </div>
+    <div class="divider-list">${record.anchors.map(a=>`<div class="row"><div class="grow"><strong>${a.anchor==="show_through"?"Bleed anchor":"Front-only anchor"}</strong><br>
+      <small>front dark ${n(a.front_dark_px,0)} px · explained ${percent(a.dark_explained_percent)} · unexplained ${n(a.dark_unexplained_px,0)} px · paper white kept ${n(a.paper_white_kept_px,0)}</small></div></div>`).join("")}</div>
+    <p class="soft">Teal = confirmed show-through (excluded from front ink). Amber = ambiguous fringe. Retain the alignment to keep this single translation.</p>`;
+  }
+  toast("Alignment preview ready. Retain it to keep this single translation.");
+  return record;
+}
+
 function tilePage() {
   const tile=state.tile;
   const descriptors=[tile.glaze,tile.body,tile.firing,tile.width_mm&&tile.height_mm?`${tile.width_mm} × ${tile.height_mm} mm`:null].filter(Boolean);
@@ -215,7 +345,7 @@ function tilePage() {
   <p>${e(descriptors.join(" · ") || "Registered press proof")}</p></div><div class="actions">${btn("Edit specimen","tile-edit","secondary","edit")}
   ${btn("Approve reference","reference-add","secondary","book")}</div></header>
   <nav class="tabs" aria-label="Specimen tools">${tabs.map(([key,label,glyph])=>`<button type="button" class="tab ${state.tab===key?"active":""}" data-do="tile-tab" data-value="${key}">${icon(glyph)}${e(label)}</button>`).join("")}</nav>
-  ${{captures,regions:regionPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
+  ${{captures,regions:regionPage,showthrough:showthroughPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
 }
 
 function libraryPage() {
@@ -271,6 +401,8 @@ async function route() {
     if (token!==travel) return;
     if (state.tile?.id!==tile.id || state.page!=="tile") {
       state.tab="captures"; state.capture=null; state.result=null;state.layer="overlay";state.viewer="raw";state.metrologyActive=null;
+      state.showFront=null;state.showBack=null;state.showLeft=tile.showthrough?.left_anchor||null;
+      state.showRight=tile.showthrough?.right_anchor||null;state.showPreview=null;
     }
     state.tile=tile;
     await gatherTile(token);
@@ -690,6 +822,18 @@ async function doAction(name,target) {
     },
     compare:pairForm,
     quality:qualityForm,
+    "showthrough-anchor-left":()=>showthroughAnchorForm("left"),
+    "showthrough-anchor-right":()=>showthroughAnchorForm("right"),
+    "showthrough-preview":()=>showthroughPreview(false),
+    "showthrough-save":()=>showthroughPreview(true),
+    "showthrough-clear":()=>modal("Clear retained show-through alignment?","<p>Ordinary single-sided ink coverage measurements are unchanged once the alignment is cleared. Earlier saved measurements keep their own snapshot.</p>","Clear alignment",async ()=>{
+      await api(tileUrl()+"/show-through",{method:"DELETE",body:{version:state.tile.version}});
+      state.showPreview=null;
+      await gatherTile();
+      state.tile=await api(tileUrl());
+      toast("Show-through alignment cleared.");
+      render();
+    }),
     "region-add":()=>regionForm(),
     "region-edit":()=>regionForm(state.tile.regions.find(item=>item.id===id)),
     "region-remove":()=>modal("Remove sampling region?",'<p>Saved measurements retain their snapshot of this region.</p>',"Remove region",async ()=>{

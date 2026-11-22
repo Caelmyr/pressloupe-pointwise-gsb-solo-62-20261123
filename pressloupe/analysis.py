@@ -193,7 +193,7 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
         return metrics, image, theoretical_legend(kind, scale)
     if kind == "coverage":
         unrestricted = region_domain(frame.extent, tile)
-        metrics, states = measure_coverage(tile, frame, linear, area, unrestricted, options)
+        metrics, states = measure_coverage(store.blobs, tile, frame, linear, area, unrestricted, options)
         return metrics, coverage_overlay(frame, states, area), theoretical_legend(kind)
     if kind == "defects":
         metrics = measure_defects(frame, linear, area, options)

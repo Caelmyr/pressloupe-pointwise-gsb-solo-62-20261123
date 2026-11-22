@@ -1,6 +1,7 @@
 import numpy as np
 from scipy import ndimage
 
+from . import showthrough
 from .color import delta_e, float_list, linear_lab, lab_linear, swatch
 from .geometry import polygon_mask
 from .model import InputError
@@ -120,7 +121,31 @@ def connected_bare(states, area, minimum_size, scale):
     }
 
 
-def measure_coverage(tile, frame, linear, area, unrestricted, parameters):
+def showthrough_bounds(blobs, tile, frame, area, parameters):
+    """Front-ink coverage interval after removing retained back-side bleed.
+
+    Returns None for an ordinary single-sided proof that has no retained
+    show-through alignment, leaving the standard coverage reading untouched.
+    """
+    alignment = tile.get("showthrough")
+    if not alignment or alignment.get("front_photo_id") != frame.photo["id"]:
+        return None
+    views = showthrough.load_views(
+        blobs, tile, alignment["front_photo_id"], alignment["back_photo_id"], alignment["flip_edge"]
+    )
+    settings = alignment["parameters"]
+    plate, halo, _, _ = showthrough.plate_masks(
+        views, settings["back_radius"], settings["back_contrast"]
+    )
+    front_dark_mask, _, _ = showthrough.front_dark(
+        views, settings["front_radius"], settings["front_contrast"]
+    )
+    dy, dx = alignment["translation_px"]
+    layers = showthrough.classify_showthrough(views, front_dark_mask, plate, halo, dy, dx, area)
+    return showthrough.coverage_bounds(layers, frame.scale)
+
+
+def measure_coverage(blobs, tile, frame, linear, area, unrestricted, parameters):
     lab = linear_lab(linear)
     bare_region = reference_region(tile, "bare", parameters["bare_region"])
     coated_region = reference_region(tile, "glazed", parameters["glazed_region"])
@@ -156,4 +181,7 @@ def measure_coverage(tile, frame, linear, area, unrestricted, parameters):
         "depth_bands": depth_bands(states, area, frame.scale),
         "isolated_bare_areas": connected_bare(states, area, parameters["minimum_island"], frame.scale),
     }
+    bounds = showthrough_bounds(blobs, tile, frame, area, parameters)
+    if bounds is not None:
+        measurement["show_through_coverage"] = bounds
     return measurement, states
